@@ -1,0 +1,1206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="robots" content="noindex, nofollow, noarchive, nosnippet">
+<meta name="googlebot" content="noindex, nofollow">
+<title>FlightFrame — Michigan</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root{
+    --fav:#ff7d1a;          /* the spotlight colour for HER plane (orange) */
+    --ink:#e9eef6;
+    --dim:#8794a8;
+    --panel:rgba(12,16,24,.82);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:#05080d;color:var(--ink);
+    font:14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;overflow:hidden}
+  #map{position:absolute;inset:0;background:#05080d}
+
+  /* ---- top bar: title, live clock, plane count ---- */
+  #bar{position:absolute;top:0;left:0;right:0;z-index:1000;display:flex;
+    align-items:center;gap:18px;padding:14px 20px;pointer-events:none;
+    background:linear-gradient(#05080dcc,#05080d00)}
+  #bar .title{font-weight:700;letter-spacing:.32em;font-size:15px}
+  #bar .title small{color:var(--dim);letter-spacing:.12em;font-weight:500}
+  #bar .spacer{flex:1}
+  #clock{font-variant-numeric:tabular-nums;color:var(--dim);letter-spacing:.1em}
+  #count{color:var(--dim)}
+  #count b{color:var(--ink)}
+
+  /* ---- the "command": type a tail number to spotlight it ---- */
+  #cmd{position:absolute;z-index:1000;left:50%;transform:translateX(-50%);bottom:20px;
+    display:flex;align-items:center;gap:0;background:var(--panel);
+    border:1px solid rgba(255,255,255,.12);
+    border-radius:999px;padding:6px 6px 6px 16px;backdrop-filter:blur(8px);
+    box-shadow:0 10px 40px #000a}
+  #cmd label{color:var(--dim);letter-spacing:.18em;font-size:11px;margin-right:12px;white-space:nowrap}
+  #cmd input{background:transparent;border:0;outline:0;color:var(--ink);
+    font:600 15px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.12em;
+    width:150px;text-transform:uppercase}
+  #cmd input::placeholder{color:#55617a;letter-spacing:.08em;font-weight:400;text-transform:none}
+  #cmd button{border:0;cursor:pointer;border-radius:999px;padding:9px 16px;margin-left:6px;
+    font-weight:700;letter-spacing:.05em;background:var(--fav);color:#fff}
+  #cmd button:active{transform:scale(.96)}
+
+  /* ---- status card for the spotlighted plane ---- */
+  #card{position:absolute;z-index:1000;left:20px;bottom:20px;width:290px;
+    background:var(--panel);border:1px solid rgba(255,255,255,.12);border-radius:16px;
+    padding:16px 18px;backdrop-filter:blur(8px);box-shadow:0 10px 40px #000a;
+    transition:opacity .3s;opacity:0}
+  #card.show{opacity:1}
+  #card .reg{font:700 22px/1 ui-monospace,Menlo,monospace;letter-spacing:.06em}
+  #card .badge{display:inline-block;margin-top:8px;font-size:11px;font-weight:700;
+    letter-spacing:.1em;padding:4px 10px;border-radius:999px}
+  #card .b-frame{background:#173d2a;color:#54e6a0}
+  #card .b-near {background:#3d3617;color:#e6c854}
+  #card .b-gnd  {background:#2a3140;color:#9fb0c8}
+  #card .b-none {background:#3a1f26;color:#ff7a96}
+  #card .b-est  {background:#241f3d;color:#b9a6ff}
+  #card .b-arr  {background:#173d2a;color:#54e6a0}
+  #card .est-note{margin-top:12px;color:#9aa3c0;font-size:11.5px;line-height:1.42;font-style:italic}
+  #card .b-ghost{background:#3a1620;color:#ff6a82}
+  #card .ghost-msg{margin-top:13px;font:italic 13px/1.55 Georgia,'Times New Roman',serif;color:#d2b4ba}
+  #card dl{margin:14px 0 0;display:grid;grid-template-columns:auto 1fr;gap:6px 14px}
+  #card dt{color:var(--dim);font-size:12px}
+  #card dd{margin:0;text-align:right;font-variant-numeric:tabular-nums}
+  #card .route{margin-top:12px;color:var(--dim);font-size:13px;letter-spacing:.04em}
+  #card .route-od{margin-top:12px;display:flex;align-items:center;flex-wrap:wrap;gap:5px;
+    font:700 15px/1.1 ui-monospace,Menlo,monospace;letter-spacing:.02em}
+  #card .route-od .cty{color:var(--dim);font:500 12px/1 -apple-system,sans-serif;letter-spacing:.01em}
+  #card .route-od .arr{color:var(--fav);font-weight:700;margin:0 3px}
+
+  /* ---- plane markers ---- */
+  .plane{will-change:transform}
+  .plane svg{display:block;filter:drop-shadow(0 0 1.5px #000a)}
+  .sil{position:relative}
+  .sil .tag{position:absolute;left:50%;top:calc(100% - 3px);transform:translateX(-50%);
+    white-space:nowrap;color:var(--ink);font:600 9px/1 ui-monospace,Menlo,monospace;
+    letter-spacing:.04em;text-shadow:0 1px 3px #000,0 0 3px #000;opacity:.82}
+  .fav-wrap{position:relative}
+  .fav-ring{position:absolute;left:50%;top:50%;width:54px;height:54px;margin:-27px 0 0 -27px;
+    border:2px solid var(--fav);border-radius:50%;animation:pulse 1.8s ease-out infinite;opacity:0}
+  .fav-label{position:absolute;left:50%;top:calc(100% - 2px);transform:translateX(-50%);white-space:nowrap;
+    background:var(--fav);color:#fff;font:700 11px/1 ui-monospace,Menlo,monospace;
+    letter-spacing:.08em;padding:3px 7px;border-radius:6px;box-shadow:0 2px 8px #0008}
+  /* estimated (off-signal dead-reckoned) favourite: dimmed, grey label, no pulse */
+  .fav-est{opacity:.6}
+  .fav-est .fav-label{background:#5b6577;color:#e7edf6}
+  /* hidden easter egg: the Razor Crest ghost — faint red, no label until clicked */
+  .ghost{opacity:.15;transition:opacity .3s}
+  .ghost:hover{opacity:.5}
+  .ghost svg{display:block;filter:drop-shadow(0 0 2px rgba(255,40,40,.5))}
+  .leaflet-popup.razor .leaflet-popup-content-wrapper{border-color:rgba(255,70,70,.5);
+    box-shadow:0 12px 40px #000b,0 0 26px rgba(255,43,43,.16)}
+  .leaflet-popup.razor .leaflet-popup-tip{border-color:rgba(255,70,70,.5)}
+  .razor-title{font:700 12px/1 ui-monospace,Menlo,monospace;letter-spacing:.24em;
+    color:#ff5a5a;margin-bottom:10px;text-transform:uppercase}
+  .razor-line{font:italic 13px/1.55 Georgia,'Times New Roman',serif;color:#eef2f8;margin:0 0 7px}
+  .razor-line:last-child{margin-bottom:0}
+  @keyframes pulse{0%{transform:scale(.5);opacity:.9}100%{transform:scale(1);opacity:0}}
+
+  /* ---- Livonia home ping ---- */
+  .ping{pointer-events:none}
+  .ping-core{position:absolute;left:50%;top:50%;width:9px;height:9px;margin:-4.5px 0 0 -4.5px;
+    border-radius:50%;background:#2ee6c0;box-shadow:0 0 8px #2ee6c0}
+  .ping-ring{position:absolute;left:50%;top:50%;width:11px;height:11px;margin:-5.5px 0 0 -5.5px;
+    border-radius:50%;border:2px solid #2ee6c0;animation:ping 2.6s ease-out infinite;opacity:0}
+  .ping-ring.d{animation-delay:1.3s}
+  .ping-label{position:absolute;left:50%;top:11px;transform:translateX(-50%);white-space:nowrap;
+    color:#2ee6c0;font:700 9px/1 ui-monospace,Menlo,monospace;letter-spacing:.18em;text-shadow:0 1px 4px #000}
+  @keyframes ping{0%{transform:scale(1);opacity:.85}100%{transform:scale(7);opacity:0}}
+
+  /* ---- legend ---- */
+  #legend{position:absolute;right:14px;top:58px;z-index:1000;background:var(--panel);
+    border:1px solid rgba(255,255,255,.1);border-radius:12px;padding:10px 12px;
+    backdrop-filter:blur(8px);font-size:11px;color:var(--dim);letter-spacing:.04em;
+    display:grid;gap:6px;box-shadow:0 8px 30px #0008}
+  #legend div{display:flex;align-items:center;gap:8px}
+  #legend i{width:9px;height:9px;border-radius:50%;display:inline-block;flex:none}
+  #legend i.r{background:transparent;border:2px solid #2ee6c0;width:7px;height:7px}
+  #legend i.ac{background:transparent;border:2px solid;width:7px;height:7px}
+
+  /* dark leaflet attribution */
+  .leaflet-control-attribution{background:#0a0e16cc!important;color:#55617a!important}
+  .leaflet-control-attribution a{color:#7d8ba6!important}
+  .leaflet-bar a{background:#11161f;color:#cdd6e6;border-color:#222a38}
+  #legend .lh{margin-top:5px;font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:#5a6577}
+  #legend .lh:first-child{margin-top:0}
+  #legend .tog{cursor:pointer}
+  #legend .tog.off{opacity:.32;text-decoration:line-through}
+  #legend i.ln{width:14px;height:3px;border-radius:2px}
+
+  /* ---- bottom-right control buttons (centre her plane / centre Livonia) ---- */
+  #ctl{position:absolute;right:14px;bottom:26px;z-index:1000;display:flex;flex-direction:column;gap:8px}
+  #ctl button{display:flex;align-items:center;gap:8px;cursor:pointer;background:var(--panel);
+    color:var(--ink);border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:9px 13px;
+    font:600 12px/1 -apple-system,BlinkMacSystemFont,sans-serif;letter-spacing:.02em;
+    backdrop-filter:blur(8px);box-shadow:0 8px 30px #0008;white-space:nowrap}
+  #ctl button:hover{border-color:rgba(255,255,255,.28)}
+  #ctl button:active{transform:scale(.97)}
+  #ctl button.on{border-color:var(--fav);color:#fff;background:rgba(255,125,26,.18)}
+  #ctl button i{width:9px;height:9px;border-radius:50%;flex:none}
+
+  /* ---- click-to-inspect popup ---- */
+  .leaflet-popup.plane-pop .leaflet-popup-content-wrapper{background:var(--panel);color:var(--ink);
+    border:1px solid rgba(255,255,255,.14);border-radius:14px;box-shadow:0 12px 40px #000b;backdrop-filter:blur(8px)}
+  .leaflet-popup.plane-pop .leaflet-popup-content{margin:13px 15px;font-size:13px;line-height:1.45}
+  .leaflet-popup.plane-pop .leaflet-popup-tip{background:var(--panel);border:1px solid rgba(255,255,255,.14)}
+  .leaflet-popup.plane-pop a.leaflet-popup-close-button{color:var(--dim);top:9px;right:9px}
+  .pop-cs{font:700 17px/1 ui-monospace,Menlo,monospace;letter-spacing:.04em;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+  .pop-al{font:600 11px/1 -apple-system,sans-serif;letter-spacing:.02em;padding:2px 8px;border-radius:999px;background:rgba(255,255,255,.12);text-shadow:0 1px 2px #0009}
+  .pop-icao{font:600 11px/1 ui-monospace,Menlo,monospace;color:var(--dim);letter-spacing:.02em}
+  .pop-route{margin-top:10px;display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+  .pop-route b{font:700 14px/1 ui-monospace,Menlo,monospace}
+  .pop-route span{color:var(--dim)} .pop-route .city{color:var(--dim);font-size:12px}
+  .pop-route.dim{color:var(--dim);font-style:italic}
+  .pop-meta{margin-top:9px;color:var(--dim);font-size:12px}
+  .pop-img{margin-top:11px;width:100%;border-radius:8px;display:block}
+
+  /* ---- airport terminals: small pulsing beacons with IATA labels ---- */
+  .apt{pointer-events:none}
+  .apt-core{position:absolute;left:50%;top:50%;width:5px;height:5px;margin:-2.5px 0 0 -2.5px;
+    border-radius:50%;background:#9fb4d2;box-shadow:0 0 5px #6f86a8}
+  .apt-ring{position:absolute;left:50%;top:50%;width:6px;height:6px;margin:-3px 0 0 -3px;
+    border-radius:50%;border:1px solid #8aa0c4;animation:apt 3s ease-out infinite;opacity:0}
+  .apt-label{position:absolute;left:50%;top:7px;transform:translateX(-50%);white-space:nowrap;
+    color:#9fb4d2;font:600 9px/1 ui-monospace,Menlo,monospace;letter-spacing:.1em;text-shadow:0 1px 3px #000}
+  .apt.big .apt-core{width:7px;height:7px;margin:-3.5px 0 0 -3.5px;background:#cfe0f5;box-shadow:0 0 8px #7f9cc0}
+  .apt.big .apt-ring{width:8px;height:8px;margin:-4px 0 0 -4px;border-color:#a9c4e0}
+  .apt.big .apt-label{color:#dce8f7;font-size:10px;top:9px;letter-spacing:.14em}
+  @keyframes apt{0%{transform:scale(1);opacity:.55}100%{transform:scale(4.5);opacity:0}}
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<div id="bar">
+  <div class="title">MICHIGAN <small>· live flight frame</small></div>
+  <div class="spacer"></div>
+  <div id="count"><b>—</b> aircraft in frame</div>
+  <div id="clock">--:--:--</div>
+</div>
+
+<div id="card"></div>
+
+<div id="legend">
+  <div class="lh">Operator <span style="opacity:.6">· tap to toggle</span></div>
+  <div class="tog" data-cls="commercial"><i style="background:#3d9bfe"></i>Commercial</div>
+  <div class="tog" data-cls="private"><i style="background:#ffb43b"></i>Private / GA</div>
+  <div class="tog" data-cls="heli"><i style="background:#c678ff"></i>Helicopter</div>
+  <div class="tog" data-cls="mil"><i style="background:#2e7d44"></i>Military</div>
+  <div class="lh">Marker</div>
+  <div><i style="background:#ff7d1a"></i>Her plane</div>
+</div>
+
+<form id="cmd" autocomplete="off">
+  <label>TRACK</label>
+  <input id="reg" placeholder="her tail # — e.g. N172Q" maxlength="10" spellcheck="false">
+  <button type="submit">Spotlight</button>
+</form>
+
+<div id="ctl">
+  <button id="btn-fav" type="button"><i style="background:var(--fav)"></i>Her plane</button>
+  <button id="btn-liv" type="button"><i style="background:#2ee6c0"></i>Livonia</button>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+/* ------------------------------------------------------------------ *
+ * FlightFrame front-end.
+ * - polls /api/planes (everything over Michigan) every few seconds
+ * - polls /api/fav?reg=  for HER plane's status (works even off-frame)
+ * - the "favourite" is resolved from:  ?fav=N123  ->  saved  ->  empty
+ *   so on the real Pi you can configure it just by setting the kiosk URL.
+ * ------------------------------------------------------------------ */
+const MI = {lat:44.6, lon:-85.0};
+const REFRESH_MS = 6000;
+const API_DIRECT = 'https://api.airplanes.live/v2';   // used when no local proxy is present
+const MI_RADIUS = 250;                                 // nm; matches server.py
+
+// Try the local Python proxy first (the Pi runs server.py — cached, rate-limit-safe).
+// Fall back to calling airplanes.live straight from the browser (its CORS is open),
+// so this exact same file ALSO works as a plain static page with no server at all.
+async function tryProxy(path){
+  try{ const r = await fetch(path); if(!r.ok) return null; return await r.json(); }
+  catch(e){ return null; }
+}
+async function getPlanes(){
+  return (await tryProxy('/api/planes'))
+      || await (await fetch(`${API_DIRECT}/point/${MI.lat}/${MI.lon}/${MI_RADIUS}`)).json();
+}
+async function getFav(reg){
+  return (await tryProxy('/api/fav?reg='+encodeURIComponent(reg)))
+      || await (await fetch(`${API_DIRECT}/reg/${encodeURIComponent(reg)}`)).json();
+}
+
+// ---- smooth continuous wheel zoom (mutsuyuki/Leaflet.SmoothWheelZoom, inlined) ----
+// Leaflet's built-in wheel zoom is debounced + stepped — that's the "non-uniform"
+// feel. This eases the zoom toward a goal every animation frame instead, so it's
+// continuous and uniform. smoothSensitivity is the SPEED dial (higher = faster).
+L.Map.mergeOptions({ smoothWheelZoom:true, smoothSensitivity:2 });
+L.Map.SmoothWheelZoom = L.Handler.extend({
+  addHooks(){ L.DomEvent.on(this._map._container,'wheel',this._onWheelScroll,this); },
+  removeHooks(){ L.DomEvent.off(this._map._container,'wheel',this._onWheelScroll,this); },
+  _onWheelScroll(e){ if(!this._isWheeling){ this._onWheelStart(e); } this._onWheeling(e); },
+  _onWheelStart(e){
+    var map=this._map;
+    this._isWheeling=true;
+    this._wheelMousePosition=map.mouseEventToContainerPoint(e);
+    this._centerPoint=map.getSize()._divideBy(2);
+    this._startLatLng=map.containerPointToLatLng(this._centerPoint);
+    this._wheelMouseLatLng=map.containerPointToLatLng(this._wheelMousePosition);
+    this._startZoom=map.getZoom();
+    this._moved=false; this._zooming=true;
+    map._stop(); if(map._panAnim){ map._panAnim.stop(); }
+    this._goalZoom=map.getZoom();
+    this._prevCenter=map.getCenter(); this._prevZoom=map.getZoom();
+    this._zoomAnimationId=requestAnimationFrame(this._updateWheelZoom.bind(this));
+  },
+  _onWheeling(e){
+    var map=this._map;
+    this._goalZoom=this._goalZoom+L.DomEvent.getWheelDelta(e)*0.003*map.options.smoothSensitivity;
+    if(this._goalZoom<map.getMinZoom()||this._goalZoom>map.getMaxZoom()){ this._goalZoom=map._limitZoom(this._goalZoom); }
+    this._wheelMousePosition=this._map.mouseEventToContainerPoint(e);
+    this._wheelMouseLatLng=map.containerPointToLatLng(this._wheelMousePosition);
+    clearTimeout(this._timeoutId);
+    this._timeoutId=setTimeout(this._onWheelEnd.bind(this),200);
+    L.DomEvent.preventDefault(e); L.DomEvent.stopPropagation(e);
+  },
+  _onWheelEnd(){ this._isWheeling=false; cancelAnimationFrame(this._zoomAnimationId); this._map._moveEnd(true); },
+  _updateWheelZoom(){
+    var map=this._map;
+    if((!map.getCenter().equals(this._prevCenter))||map.getZoom()!=this._prevZoom){ return; }
+    this._zoom=map.getZoom()+(this._goalZoom-map.getZoom())*0.3;
+    this._zoom=Math.floor(this._zoom*100)/100;
+    var delta=this._wheelMousePosition.subtract(this._centerPoint);
+    if(delta.x===0&&delta.y===0){ return; }
+    this._center=map.unproject(map.project(this._wheelMouseLatLng,this._zoom).subtract(delta),this._zoom);
+    if(!this._moved){ map._moveStart(true,false); this._moved=true; }
+    map._move(this._center,this._zoom);
+    this._prevCenter=map.getCenter(); this._prevZoom=map.getZoom();
+    this._zoomAnimationId=requestAnimationFrame(this._updateWheelZoom.bind(this));
+  }
+});
+L.Map.addInitHook('addHandler','smoothWheelZoom',L.Map.SmoothWheelZoom);
+
+const map = L.map('map',{
+    zoomControl:false, attributionControl:true,
+    minZoom:2, maxZoom:11,
+    zoomSnap:0,
+    scrollWheelZoom:false,                        // replaced by the smooth handler above
+    smoothWheelZoom:true, smoothSensitivity:2,    // <- speed dial (higher = faster)
+    zoomAnimation:true, markerZoomAnimation:true,
+    inertia:true,
+    // ONE world only — no infinite repeat. maxBounds walls off the drag at the map edge
+    // (top/bottom hard-cut at the Mercator limit ±85; sides hard-cut at ±180). worldCopyJump
+    // off + noWrap tiles (below) = a single world copy: lighter on the Pi, and a plane crossing
+    // the dateline simply reappears on the opposite edge instead of gliding across a wrapped copy.
+    maxBounds:[[-85.05,-180],[85.05,180]], maxBoundsViscosity:1.0, worldCopyJump:false
+  }).setView([44.4,-85.0], 6);
+// no +/- zoom buttons (removed per request)
+
+// dark "carto" basemap — free for reasonable personal use, makes planes pop
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{
+  subdomains:'abcd', maxZoom:19, noWrap:true,   // noWrap = render ONE world, no horizontal repeat
+  updateWhenZooming:false, keepBuffer:4,   // fewer tile swaps mid-zoom = smoother
+  attribution:'&copy; OpenStreetMap &copy; CARTO · data: airplanes.live'
+}).addTo(map);
+
+// faint radar rings, purely decorative, centred on the frame
+[100,185,370].forEach(km=>L.circle([MI.lat,MI.lon],{radius:km*1000,
+  color:'#1d6fa5',weight:1,opacity:.18,fill:false}).addTo(map));
+
+// ---- plane rendering, level-of-detail ----
+// Far out, every aircraft is a fast canvas DOT coloured by operator class
+// (commercial / private / heli). Zoom in past SIL_ZOOM and the nearest aircraft
+// graduate to proper top-down SILHOUETTES (one per type family), rotated to
+// heading; past LABEL_ZOOM they pick up a callsign tag. The favourite is always
+// a highlighted silhouette. Dots live on one shared canvas (cheap); silhouettes
+// are DOM and capped, so they only cost anything when you're zoomed in close.
+const planesRenderer = L.canvas({ padding: 0.5 });
+const dots  = new Map();           // hex -> L.circleMarker  (always-on base layer)
+const icons = new Map();           // hex -> L.marker        (silhouettes, zoomed-in only)
+let favMarker = null;              // her plane, always a highlighted silhouette
+let latestPlanes = [];
+let lastInteract = 0;              // when you last grabbed the map (zoom/drag)
+let centeredFav = null;            // hex we last auto-centred, so we pan only on change
+const FOLLOW_RESUME_MS = 30000;    // after you touch the map, auto-follow yields this long
+const SIL_ZOOM   = 5;              // planes are silhouettes by DEFAULT (dots only as overflow)
+const LABEL_ZOOM = 8.2;            // silhouettes pick up a callsign tag at this zoom
+const MAX_SIL    = 350;            // silhouette cap; overflow at the dense edges falls back to dots
+const FAV_COLOR  = getComputedStyle(document.documentElement).getPropertyValue('--fav').trim();
+const CAT = { commercial:'#3d9bfe', private:'#ffb43b', heli:'#c678ff', mil:'#2e7d44' };
+const hidden = { commercial:false, private:false, heli:false, mil:false };   // legend toggles
+let favPos = null;                                // last known position of the favourite (centre button)
+let following = false;                            // actively follow her plane each cycle ("Her plane" button)
+const FOLLOW_ZOOM = 5;                            // zoom OUT while following so you can read the surroundings
+let estLine = null;                               // dashed projection line: last contact -> estimated position
+let razorCardActive = false;                      // true while the Razor Crest easter egg owns the info card
+
+// airline brand colours keyed by the 3-letter ICAO prefix of the callsign.
+// DTW is a Delta/Spirit hub, so the Delta-Connection regionals matter most here.
+const AIRLINES = {
+  DAL:{n:'Delta',c:'#e1142d'}, EDV:{n:'Endeavor · Delta',c:'#e1142d'}, SKW:{n:'SkyWest',c:'#2b6fd6'},
+  RPA:{n:'Republic',c:'#9c1c30'}, AAL:{n:'American',c:'#cfd8e6'}, ENY:{n:'Envoy · American',c:'#cfd8e6'},
+  JIA:{n:'PSA · American',c:'#cfd8e6'}, UAL:{n:'United',c:'#2440b8'}, SWA:{n:'Southwest',c:'#ffd400'},
+  NKS:{n:'Spirit',c:'#ffe21f'}, JBU:{n:'JetBlue',c:'#1a49c4'}, FFT:{n:'Frontier',c:'#1aa64a'},
+  ASA:{n:'Alaska',c:'#2a7de1'}, ACA:{n:'Air Canada',c:'#e0202a'}, AAY:{n:'Allegiant',c:'#16518f'},
+  ASH:{n:'Mesa',c:'#2a8fd0'}, GJS:{n:'GoJet',c:'#7a4fc0'}, QXE:{n:'Horizon · Alaska',c:'#2a7de1'},
+  SCX:{n:'Sun Country',c:'#16518f'}, WJA:{n:'WestJet',c:'#1aa3d6'}, DLH:{n:'Lufthansa',c:'#1a2c5e'},
+  BAW:{n:'British Airways',c:'#2a5fb0'}, AFR:{n:'Air France',c:'#10306e'}, KLM:{n:'KLM',c:'#12a0dc'},
+  FDX:{n:'FedEx',c:'#6a2ea0'}, UPS:{n:'UPS',c:'#9a7b2a'}, GTI:{n:'Atlas Air',c:'#2a5e90'},
+  // --- regionals / mainline (DTW-relevant) ---
+  JZA:{n:'Jazz · Air Canada',c:'#e0202a'}, PDT:{n:'Piedmont · American',c:'#cfd8e6'},
+  // --- Canadian LCC / Porter (Windsor & Toronto right across the river) ---
+  PTR:{n:'Porter',c:'#8fb3d9'}, POE:{n:'Porter',c:'#8fb3d9'},   // adsbdb mislabels PTR; local name wins (see detailHTML)
+  FLE:{n:'Flair',c:'#19a64e'}, ROU:{n:'Rouge · Air Canada',c:'#e0202a'}, TSC:{n:'Air Transat',c:'#2f6fb5'},
+  // --- fractional / charter (classed PRIVATE in planeClass; name still shows in popup) ---
+  EJA:{n:'NetJets',c:'#b08d57'}, LXJ:{n:'Flexjet',c:'#9a7b2a'}, NJM:{n:'Northern Jet',c:'#9aa3af'},
+  JTL:{n:'Jet Linx',c:'#9aa3af'}, EJM:{n:'Executive Jet Mgmt',c:'#9aa3af'}, WUP:{n:'Wheels Up',c:'#c2c8d0'},
+  // --- cargo (mostly after dark at DTW) ---
+  CKS:{n:'Kalitta Air',c:'#3f6db5'}, KFS:{n:'Kalitta Charters',c:'#3f6db5'}, CLX:{n:'Cargolux',c:'#d4001a'},
+  ATN:{n:'Air Transport Intl',c:'#4f86c8'}, CJT:{n:'Cargojet',c:'#c8102e'},
+  // --- foreign mainline passing overhead ---
+  VOI:{n:'Volaris',c:'#cf5cb5'}, AMX:{n:'Aeroméxico',c:'#6b86b8'}, KAL:{n:'Korean Air',c:'#5b7fc0'},
+  CAL:{n:'China Airlines',c:'#cf102d'}, CSG:{n:'China Southern Cargo',c:'#cf102d'}, AIC:{n:'Air India',c:'#cd1f2c'},
+  UAE:{n:'Emirates',c:'#d71921'}, QTR:{n:'Qatar Airways',c:'#b5567f'}, ETD:{n:'Etihad',c:'#cbb04a'},
+  ANA:{n:'ANA',c:'#6277c0'}, LOT:{n:'LOT',c:'#5e80b5'}, SAS:{n:'SAS',c:'#5a8fcc'},
+  TAP:{n:'TAP',c:'#1a9a52'}, CHH:{n:'Hainan',c:'#cf102d'},
+};
+
+// short fading trails: the feed only gives the current point, so we accumulate
+// each plane's recent positions client-side (capped to TRAIL_LEN) and draw a line.
+map.createPane('trails'); map.getPane('trails').style.zIndex = 380;   // under the dots
+const trailRenderer = L.canvas({ padding:0.5, pane:'trails' });
+const history = new Map();   // hex -> [[lat,lon],...]
+const trails  = new Map();   // hex -> L.polyline
+let favTrailHex = null;
+const TRAIL_LEN = 10;
+const FAV_TRAIL_LEN = 50;     // her plane keeps a 5x longer trail than everyone else
+
+// ---- airport terminals (pulsing beacons). Hubs (s:3) always show; regionals
+//      (s:2) only when zoomed in; and we only build the ones currently in frame.
+map.createPane('airports'); map.getPane('airports').style.zIndex = 590;   // under the planes
+const aptMarkers = new Map();   // iata -> L.marker
+const APT_MED_ZOOM = 7;         // regional terminals appear at/above this zoom
+const AIRPORTS = [
+{i:"BUF",n:"Buffalo",y:42.9405,x:-78.7322,s:3},{i:"CLE",n:"Cleveland",y:41.4117,x:-81.8498,s:3},{i:"CMH",n:"Columbus",y:39.998,x:-82.8919,s:3},{i:"DTW",n:"Detroit",y:42.2138,x:-83.3538,s:3},
+{i:"GRR",n:"Grand Rapids",y:42.8808,x:-85.5228,s:3},{i:"IND",n:"Indianapolis",y:39.7173,x:-86.2944,s:3},{i:"MDW",n:"Chicago",y:41.786,x:-87.7524,s:3},{i:"MKE",n:"Milwaukee",y:42.9472,x:-87.8966,s:3},
+{i:"ORD",n:"Chicago",y:41.9786,x:-87.9048,s:3},{i:"PIT",n:"Pittsburgh",y:40.4915,x:-80.2329,s:3},{i:"YYZ",n:"Toronto",y:43.6759,x:-79.6294,s:3},{i:"AOO",n:"Altoona",y:40.2964,x:-78.32,s:2},
+{i:"APN",n:"Alpena",y:45.0781,x:-83.5603,s:2},{i:"ATW",n:"Appleton",y:44.2585,x:-88.519,s:2},{i:"AZO",n:"Kalamazoo",y:42.2321,x:-85.5496,s:2},{i:"BFD",n:"Bradford",y:41.8031,x:-78.6401,s:2},
+{i:"BMI",n:"Bloomington",y:40.4771,x:-88.9159,s:2},{i:"BRL",n:"Burlington",y:40.7832,x:-91.1255,s:2},{i:"CAK",n:"Akron",y:40.9161,x:-81.4422,s:2},{i:"CID",n:"Cedar Rapids",y:41.8847,x:-91.7108,s:2},
+{i:"CIU",n:"Sault Ste Marie",y:46.242,x:-84.4621,s:2},{i:"CMI",n:"Champaign",y:40.0398,x:-88.2762,s:2},{i:"CMX",n:"Hancock",y:47.1684,x:-88.4891,s:2},{i:"CWA",n:"Mosinee",y:44.7774,x:-89.6702,s:2},
+{i:"DAY",n:"Dayton",y:39.9024,x:-84.2194,s:2},{i:"DBQ",n:"Dubuque",y:42.402,x:-90.7095,s:2},{i:"DEC",n:"Decatur",y:39.8346,x:-88.8657,s:2},{i:"DLH",n:"Duluth",y:46.8419,x:-92.1987,s:2},
+{i:"DUJ",n:"Dubois",y:41.1783,x:-78.8987,s:2},{i:"EAU",n:"Eau Claire",y:44.8658,x:-91.4843,s:2},{i:"ERI",n:"Erie",y:42.0831,x:-80.1739,s:2},{i:"ESC",n:"Escanaba",y:45.7232,x:-87.0886,s:2},
+{i:"FNT",n:"Flint",y:42.9693,x:-83.7434,s:2},{i:"FWA",n:"Fort Wayne",y:40.9789,x:-85.1945,s:2},{i:"GRB",n:"Green Bay",y:44.4835,x:-88.1308,s:2},{i:"GYY",n:"Gary",y:41.6171,x:-87.4132,s:2},
+{i:"IAG",n:"Niagara Falls",y:43.1073,x:-78.9462,s:2},{i:"IMT",n:"Iron Mountain",y:45.8191,x:-88.1146,s:2},{i:"JST",n:"Johnstown",y:40.3161,x:-78.8339,s:2},{i:"LAF",n:"Lafayette",y:40.4129,x:-86.9394,s:2},
+{i:"LAN",n:"Lansing",y:42.7776,x:-84.5857,s:2},{i:"LBE",n:"Latrobe",y:40.2759,x:-79.4048,s:2},{i:"LCK",n:"Columbus",y:39.8138,x:-82.9278,s:2},{i:"LSE",n:"La Crosse",y:43.879,x:-91.2567,s:2},
+{i:"MBS",n:"Saginaw",y:43.5332,x:-84.0831,s:2},{i:"MGC",n:"Michigan City",y:41.7033,x:-86.8212,s:2},{i:"MGW",n:"Morgantown",y:39.6433,x:-79.9176,s:2},{i:"MKG",n:"Muskegon",y:43.1695,x:-86.2382,s:2},
+{i:"MLI",n:"Moline",y:41.4485,x:-90.5075,s:2},{i:"MQT",n:"Marquette",y:46.3515,x:-87.3959,s:2},{i:"MSN",n:"Madison",y:43.1399,x:-89.3375,s:2},{i:"PIA",n:"Peoria",y:40.6638,x:-89.6926,s:2},
+{i:"PLN",n:"Pellston",y:45.5709,x:-84.7967,s:2},{i:"RFD",n:"Rockford",y:42.1954,x:-89.0972,s:2},{i:"RHI",n:"Rhinelander",y:45.6312,x:-89.4675,s:2},{i:"SBN",n:"South Bend",y:41.7083,x:-86.3169,s:2},
+{i:"SPI",n:"Springfield",y:39.8441,x:-89.6779,s:2},{i:"TOL",n:"Toledo",y:41.5868,x:-83.8078,s:2},{i:"TVC",n:"Traverse City",y:44.7414,x:-85.5822,s:2},{i:"UIN",n:"Quincy",y:39.9427,x:-91.1946,s:2},
+{i:"YAM",n:"Sault Ste Marie",y:46.4832,x:-84.5085,s:2},{i:"YCM",n:"Niagara",y:43.1916,x:-79.1717,s:2},{i:"YHM",n:"Hamilton",y:43.1735,x:-79.9312,s:2},{i:"YKF",n:"Kitchener",y:43.4608,x:-80.3786,s:2},
+{i:"YLK",n:"Barrie",y:44.4851,x:-79.5547,s:2},{i:"YPQ",n:"Peterborough",y:44.2323,x:-78.3621,s:2},{i:"YQA",n:"Muskoka",y:44.9754,x:-79.3065,s:2},{i:"YQG",n:"Windsor",y:42.2756,x:-82.9556,s:2},
+{i:"YQT",n:"Thunder Bay",y:48.3719,x:-89.3239,s:2},{i:"YSB",n:"Sudbury",y:46.625,x:-80.7989,s:2},{i:"YTS",n:"Timmins",y:48.5697,x:-81.3767,s:2},{i:"YTZ",n:"Toronto City",y:43.6279,x:-79.3955,s:2},
+{i:"YUY",n:"Rouyn-Noranda",y:48.2061,x:-78.8356,s:2},{i:"YVV",n:"Wiarton",y:44.7458,x:-81.1072,s:2},{i:"YXU",n:"London",y:43.0328,x:-81.149,s:2},{i:"YYB",n:"North Bay",y:46.3636,x:-79.4228,s:2},
+];
+
+let inMotion = false;   // true while actively zooming/panning -> drop to fast canvas dots
+map.on('zoomstart dragstart', ()=>{ lastInteract = Date.now(); });
+// While moving (smooth-wheel zoom or drag) hide the heavy DOM silhouettes and show
+// only the cheap canvas dots, then snap silhouettes back the instant motion settles.
+// This removes the per-frame cost of repositioning hundreds of DOM markers mid-zoom.
+map.on('movestart', ()=>{ if(!inMotion){ inMotion = true; render(); } });
+map.on('zoomend moveend', ()=>{ inMotion = false; if(latestPlanes.length) render(); });
+
+// ---- home: a pulsing ping over Livonia, MI (42.36837, -83.35271) ----
+L.marker([42.36837,-83.35271], {interactive:false, keyboard:false, zIndexOffset:600,
+  icon:L.divIcon({className:'ping', iconSize:[12,12], iconAnchor:[6,6],
+    html:`<div class="ping-ring"></div><div class="ping-ring d"></div>`
+       +  `<div class="ping-core"></div><div class="ping-label">LIVONIA</div>`})}).addTo(map);
+
+// ---- favourite resolution ----
+const params = new URLSearchParams(location.search);
+let fav = (params.get('fav') || localStorage.getItem('ff_fav') || 'N527DN').toUpperCase();   // her plane (default)
+const regInput = document.getElementById('reg');
+regInput.value = fav;
+document.getElementById('cmd').addEventListener('submit',e=>{
+  e.preventDefault();
+  fav = regInput.value.trim().toUpperCase();
+  localStorage.setItem('ff_fav', fav);
+  regInput.blur();
+  razorCardActive = false;         // reclaim the card if the easter egg had it
+  cycle();                         // instant feedback
+});
+
+// ---- legend toggles: tap an operator class to show/hide it ----
+document.querySelectorAll('#legend .tog').forEach(el=>{
+  el.addEventListener('click', ()=>{
+    const c = el.dataset.cls;
+    hidden[c] = !hidden[c];
+    el.classList.toggle('off', hidden[c]);
+    render();
+  });
+});
+
+// ---- bottom-right buttons: centre her plane / centre Livonia ----
+const btnFav = document.getElementById('btn-fav');
+document.getElementById('btn-liv').addEventListener('click', ()=>{
+  following = false; btnFav.classList.remove('on');     // going to Livonia stops the follow
+  map.flyTo([42.36837,-83.35271], Math.max(map.getZoom(), 9), {duration:1.2});
+});
+btnFav.addEventListener('click', ()=>{
+  following = true; btnFav.classList.add('on');          // start actively following her plane
+  razorCardActive = false;                                // reclaim the card from the easter egg
+  if(favPos) map.flyTo(favPos, FOLLOW_ZOOM, {duration:1.4});   // zoomed out for context
+});
+// any hands-on map gesture cancels the follow. drag + wheel are user-only — programmatic
+// flyTo/setView don't fire them, so the follow never cancels itself.
+function stopFollow(){ if(following){ following=false; btnFav.classList.remove('on'); } }
+map.on('dragstart', stopFollow);
+map.getContainer().addEventListener('wheel', stopFollow, {passive:true});
+
+// ---- helpers ----
+const $card = document.getElementById('card');
+const countEl = document.getElementById('count');
+const haversine = (a,b,c,d)=>{const R=6371,toR=x=>x*Math.PI/180;
+  const dLat=toR(c-a),dLon=toR(d-b);
+  const h=Math.sin(dLat/2)**2+Math.cos(toR(a))*Math.cos(toR(c))*Math.sin(dLon/2)**2;
+  return 2*R*Math.asin(Math.sqrt(h));};                 // km
+
+// ---- route sanity: how far (mi) is the plane from the O->D great-circle path? ----
+// The free route DBs are sometimes stale (e.g. a callsign's 2018 route), so we only
+// trust a route if the aircraft is actually plausibly flying it.
+const _bearing = (a,b,c,d)=>{const toR=x=>x*Math.PI/180; const φ1=toR(a),φ2=toR(c),Δλ=toR(d-b);
+  return Math.atan2(Math.sin(Δλ)*Math.cos(φ2), Math.cos(φ1)*Math.sin(φ2)-Math.sin(φ1)*Math.cos(φ2)*Math.cos(Δλ));};
+function distToRouteMi(plat,plon, olat,olon, dlat,dlon){
+  const R=6371;
+  const d13=haversine(olat,olon,plat,plon)/R;                  // angular (rad)
+  const θ13=_bearing(olat,olon,plat,plon), θ12=_bearing(olat,olon,dlat,dlon);
+  const xt=Math.asin(Math.sin(d13)*Math.sin(θ13-θ12));         // cross-track (rad)
+  const at=Math.acos(Math.max(-1,Math.min(1,Math.cos(d13)/Math.cos(xt))));  // along-track (rad)
+  const d12=haversine(olat,olon,dlat,dlon)/R;
+  let km;
+  if(at<0) km=haversine(olat,olon,plat,plon);                  // before the origin
+  else if(at>d12) km=haversine(dlat,dlon,plat,plon);           // past the destination
+  else km=Math.abs(xt)*R;                                      // alongside the path
+  return km*0.621371;
+}
+function routeFits(ac, r){
+  if(!(r&&r.origin&&r.destination)) return false;
+  const o=r.origin, d=r.destination;
+  if(typeof o.latitude!=='number'||typeof d.latitude!=='number'||typeof ac.lat!=='number') return true; // can't check -> allow
+  // cross-track tolerance SCALES with route length: a 400mi regional hop must hug its line
+  // (~280mi), but a 7000mi transpacific (e.g. her ATL->ICN) legitimately wanders hundreds of
+  // miles off the naive great circle on wind-optimised routing. A flat 280mi gate wrongly hid
+  // those. ~13% of route length, floored at 280, capped at 900. (her ATL->ICN: tol~900, she's
+  // ~700mi off -> shows; stale MIA->LGG: tol~560, plane 1300mi off -> still correctly hidden.)
+  const routeLen = haversine(o.latitude,o.longitude, d.latitude,d.longitude)*0.621371;
+  const tol = Math.min(900, Math.max(280, routeLen*0.13));
+  if(distToRouteMi(ac.lat,ac.lon, o.latitude,o.longitude, d.latitude,d.longitude) > tol) return false;
+  // near either endpoint -> the plane is departing or arriving that very airport, so trust the
+  // route regardless of its instantaneous heading (it may be vectoring, turning out, or on final).
+  const dOrig = haversine(ac.lat,ac.lon, o.latitude,o.longitude)*0.621371;
+  const dDest = haversine(ac.lat,ac.lon, d.latitude,d.longitude)*0.621371;
+  if(Math.min(dOrig,dDest) < 75) return true;
+  // mid-route heading sanity: a plane truly flying O->D tracks roughly toward D. Catches a stale
+  // route whose great circle merely clips the plane's position (the RPA4740 false-positive).
+  if(typeof ac.track==='number'){
+    const brg = (_bearing(ac.lat,ac.lon, d.latitude,d.longitude)*180/Math.PI + 360) % 360;
+    const diff = Math.abs(((ac.track - brg + 540) % 360) - 180);   // 0..180 deg off
+    if(diff > 90) return false;
+  }
+  return true;
+}
+
+// ---- dead-reckoning: estimate her position while she's off-signal ----
+// When she drops off ADS-B (sparse coverage over oceans/poles), we project her last
+// known position forward ALONG the known great-circle route by (groundspeed × elapsed
+// time). It's an ESTIMATE — drawn dimmed + dashed and clearly labelled — overwritten by
+// real data the instant she transmits again.
+const FAV_STORE_KEY = 'ff_fav_state';
+const EST_MAX_H = 18;   // past this since last contact the estimate is meaningless -> drop it
+
+// intermediate point a fraction f (0..1) along the great circle from pt1 to pt2
+function interpGC(lat1,lon1,lat2,lon2,f){
+  const toR=x=>x*Math.PI/180, toD=x=>x*180/Math.PI;
+  const p1=toR(lat1),l1=toR(lon1),p2=toR(lat2),l2=toR(lon2);
+  const d=2*Math.asin(Math.sqrt(Math.sin((p2-p1)/2)**2+Math.cos(p1)*Math.cos(p2)*Math.sin((l2-l1)/2)**2));
+  if(!d) return [lat1,lon1];
+  const a=Math.sin((1-f)*d)/Math.sin(d), b=Math.sin(f*d)/Math.sin(d);
+  const x=a*Math.cos(p1)*Math.cos(l1)+b*Math.cos(p2)*Math.cos(l2);
+  const y=a*Math.cos(p1)*Math.sin(l1)+b*Math.cos(p2)*Math.sin(l2);
+  const z=a*Math.sin(p1)+b*Math.sin(p2);
+  return [toD(Math.atan2(z,Math.hypot(x,y))), toD(Math.atan2(y,x))];
+}
+// persist her last LIVE state (+ a geo-VALIDATED route) so we can estimate while offline
+// and keep the card showing her constant info (reg/type/route) with no signal.
+function saveFavState(ac, route){
+  let prev={}; try{ prev=JSON.parse(localStorage.getItem(FAV_STORE_KEY))||{}; }catch(e){}
+  const st = {
+    reg:(ac.r||fav||'').toUpperCase(), hex:ac.hex, flight:(ac.flight||'').trim(),
+    t:ac.t, desc:ac.desc, ownOp:ac.ownOp,
+    lat:ac.lat, lon:ac.lon, gs:ac.gs, track:ac.track, alt:ac.alt_baro,
+    ts: Date.now() - (typeof ac.seen_pos==='number'?ac.seen_pos:0)*1000,
+    // keep the last VALIDATED route; only refresh it when the live route still geo-fits
+    oI:prev.oI,oM:prev.oM,oLat:prev.oLat,oLon:prev.oLon, dI:prev.dI,dM:prev.dM,dLat:prev.dLat,dLon:prev.dLon
+  };
+  if(route&&route.origin&&route.destination&&routeFits(ac,route)){
+    const o=route.origin,d=route.destination;
+    st.oI=o.iata_code||o.icao_code; st.oM=o.municipality||''; st.oLat=o.latitude; st.oLon=o.longitude;
+    st.dI=d.iata_code||d.icao_code; st.dM=d.municipality||''; st.dLat=d.latitude; st.dLon=d.longitude;
+  }
+  try{ localStorage.setItem(FAV_STORE_KEY, JSON.stringify(st)); }catch(e){}
+}
+function loadFavState(){
+  let st=null; try{ st=JSON.parse(localStorage.getItem(FAV_STORE_KEY)); }catch(e){}
+  if(!st) return null;
+  if(fav && !fav.startsWith('TYPE:') && st.reg!==fav.toUpperCase()) return null; // now tracking a different plane
+  return st;
+}
+// compute the estimate from stored state. tiers: enroute | arrived | lastknown | null
+function estimateFav(st){
+  if(!st || typeof st.lat!=='number') return null;
+  const elapsedMs = Date.now() - (st.ts||0);
+  if(elapsedMs < 0 || elapsedMs > EST_MAX_H*3.6e6) return null;
+  const haveRoute = typeof st.dLat==='number' && typeof st.dLon==='number';
+  const airborne  = st.alt!=='ground' && (st.gs||0) > 60;
+  if(!haveRoute || !airborne) return {tier:'lastknown', lat:st.lat, lon:st.lon, track:st.track||0, elapsedMs};
+  const remNm = haversine(st.lat,st.lon, st.dLat,st.dLon)*0.539957;   // nm still to fly (from last contact)
+  const advNm = (st.gs||0) * (elapsedMs/3.6e6);                       // nm covered since contact
+  if(advNm >= remNm) return {tier:'arrived', lat:st.dLat, lon:st.dLon, elapsedMs, remNm:0};
+  const f = advNm/remNm;
+  const [elat,elon] = interpGC(st.lat,st.lon, st.dLat,st.dLon, f);
+  const brg = (_bearing(elat,elon, st.dLat,st.dLon)*180/Math.PI+360)%360;
+  const remainNm = Math.max(0, remNm-advNm);
+  let pct=null;
+  if(typeof st.oLat==='number'){
+    const total=haversine(st.oLat,st.oLon, st.dLat,st.dLon), done=haversine(st.oLat,st.oLon, elat,elon);
+    pct = total? Math.max(0,Math.min(100, Math.round(100*done/total))) : null;
+  }
+  const etaMin = st.gs>0 ? Math.round(remainNm/st.gs*60) : null;
+  return {tier:'enroute', lat:elat, lon:elon, track:brg, from:[st.lat,st.lon], remNm:Math.round(remainNm), pct, etaMin, elapsedMs};
+}
+function agoStr(ms){ const m=Math.round(ms/60000); if(m<60) return m+' min'; return Math.floor(m/60)+' h '+(m%60)+' min'; }
+// dashed line from last contact to the estimated position (the "projected travel" cue)
+function drawEstLine(a,b){
+  // single (non-wrapping) world: a line spanning >180° of longitude would streak straight across
+  // the whole map at the dateline. skip it then — the ghost marker still shows on its correct side.
+  if(Math.abs(a[1]-b[1]) > 180){ clearEstLine(); return; }
+  if(!estLine){ estLine = L.polyline([a,b],{color:FAV_COLOR,weight:2,opacity:.5,dashArray:'4 7',interactive:false}).addTo(map); }
+  else estLine.setLatLngs([a,b]);
+}
+function clearEstLine(){ if(estLine){ map.removeLayer(estLine); estLine=null; } }
+
+// ---- top-down aircraft silhouettes, one per type family ----
+// Each is built from simple primitives in a 100x100 box, nose pointing UP
+// (so a rotate(track) lines it up with heading). fill=currentColor, so the
+// wrapper's text colour drives it (operator class, or pink for the favourite).
+const SIL = {
+  ga_single:`<ellipse cx="50" cy="13" rx="11" ry="3.2" opacity=".3"/><path d="M50 9 L53 22 L53 86 L47 86 L47 22 Z"/><rect x="9" y="41" width="82" height="6" rx="3"/><rect x="33" y="82" width="34" height="4" rx="2"/>`,
+  ga_twin:`<ellipse cx="29" cy="40" rx="6" ry="2.6" opacity=".28"/><ellipse cx="71" cy="40" rx="6" ry="2.6" opacity=".28"/><path d="M50 11 L53 24 L53 86 L47 86 L47 24 Z"/><rect x="9" y="43" width="82" height="6.5" rx="3.2"/><rect x="25.5" y="39" width="7" height="12" rx="2"/><rect x="67.5" y="39" width="7" height="12" rx="2"/><rect x="33" y="83" width="34" height="4" rx="2"/>`,
+  turboprop:`<ellipse cx="26" cy="37" rx="7" ry="3" opacity=".28"/><ellipse cx="74" cy="37" rx="7" ry="3" opacity=".28"/><path d="M50 9 L53 22 L53 87 L47 87 L47 22 Z"/><rect x="6" y="42" width="88" height="7.5" rx="3.5"/><rect x="21" y="36" width="9" height="14" rx="2.5"/><rect x="70" y="36" width="9" height="14" rx="2.5"/><rect x="29" y="84" width="42" height="5" rx="2.5"/>`,
+  regional:`<rect x="47" y="9" width="6" height="80" rx="3"/><path d="M50 6 L47 15 L53 15 Z"/><polygon points="47,45 17,63 17,67 47,56"/><polygon points="53,45 83,63 83,67 53,56"/><polygon points="47.5,80 34,89 34,90 47.5,84"/><polygon points="52.5,80 66,89 66,90 52.5,84"/><ellipse cx="44.5" cy="73" rx="2.3" ry="4.4"/><ellipse cx="55.5" cy="73" rx="2.3" ry="4.4"/>`,
+  narrowbody:`<rect x="46.5" y="10" width="7" height="80" rx="3.5"/><path d="M50 6 L46.5 16 L53.5 16 Z"/><polygon points="47,44 8,64 8,68 47,57"/><polygon points="53,44 92,64 92,68 53,57"/><polygon points="47.5,80 31,89 31,90.5 47.5,84"/><polygon points="52.5,80 69,89 69,90.5 52.5,84"/><ellipse cx="38" cy="55" rx="2.7" ry="5.2"/><ellipse cx="62" cy="55" rx="2.7" ry="5.2"/>`,
+  widebody:`<rect x="45.5" y="8" width="9" height="84" rx="4.5"/><path d="M50 4 L45.5 15 L54.5 15 Z"/><polygon points="46,42 5,63 5,68 46,55"/><polygon points="54,42 95,63 95,68 54,55"/><polygon points="47,82 27,92 27,93.5 47,86"/><polygon points="53,82 73,92 73,93.5 53,86"/><ellipse cx="34" cy="54" rx="3.5" ry="6.8"/><ellipse cx="66" cy="54" rx="3.5" ry="6.8"/>`,
+  bizjet:`<rect x="47.5" y="11" width="5" height="76" rx="2.5"/><path d="M50 8 L47.5 17 L52.5 17 Z"/><polygon points="48,48 23,63 23,66 48,57"/><polygon points="52,48 77,63 77,66 52,57"/><polygon points="48,79 38,87 38,88 48,82"/><polygon points="52,79 62,87 62,88 52,82"/><ellipse cx="45.5" cy="74" rx="1.9" ry="3.8"/><ellipse cx="54.5" cy="74" rx="1.9" ry="3.8"/>`,
+  heli:`<circle cx="50" cy="46" r="33" opacity=".15"/><rect x="17" y="45.2" width="66" height="1.6" rx=".8" opacity=".5"/><rect x="49.2" y="13" width="1.6" height="66" rx=".8" opacity=".5"/><ellipse cx="50" cy="50" rx="8" ry="15"/><rect x="48.5" y="49" width="3" height="41" rx="1.5"/><rect x="43" y="86" width="14" height="3" rx="1.5"/>`,
+  glider:`<ellipse cx="50" cy="40" rx="3" ry="1.5" opacity=".25"/><path d="M50 9 L52 20 L52 88 L48 88 L48 20 Z"/><rect x="4" y="40" width="92" height="3.4" rx="1.7"/><rect x="37" y="85" width="26" height="3" rx="1.5"/>`,
+  generic:`<rect x="46.5" y="10" width="7" height="80" rx="3.5"/><path d="M50 6 L46.5 16 L53.5 16 Z"/><polygon points="47,45 12,63 12,67 47,56"/><polygon points="53,45 88,63 88,67 53,56"/><polygon points="47.5,80 32,89 32,90 47.5,84"/><polygon points="52.5,80 68,89 68,90 52.5,84"/>`
+};
+const SIL_BASE = {ga_single:20,ga_twin:22,turboprop:25,regional:25,bizjet:22,narrowbody:30,widebody:40,heli:23,glider:26,generic:27};
+
+// map a type code (+ ADS-B category) to a silhouette family. heuristic, generous.
+function family(ac){
+  const t=(ac.t||'').toUpperCase(), cat=(ac.category||'').toUpperCase();
+  if(cat==='A7'||/^(EC|AS3|AS5|AS6|R22|R44|R66|B06|B407|B41|B42|B47|H50|H60|H47|S76|S92|A109|A119|A139|MD5|UH|EH|GAZ)/.test(t)) return 'heli';
+  if(/^(GLID|AS2[0-9]|DG[0-9]|LS[0-9]|SZD|DISC|VENT|JANU|NIMB|ARCU|G103|DUOD)/.test(t)) return 'glider';
+  if(/^(C72|C120|C121|C150|C152|C162|C170|C172|C177|C180|C182|C185|C206|C210|C82|T206|P28|PA28|PA18|PA32|P32|PA38|PA46|SR2|S22T|DA40|DA20|DV20|BE33|BE35|BE36|BE77|M20|AA5|GLST|RV|AC11|COL|TB2|S108|T6|GX|CRUZ)/.test(t)) return 'ga_single';
+  if(/^(BE58|BE55|BE76|PA30|PA34|PA44|C310|C320|C337|C340|C402|C404|C414|C421|PA31|BE9)/.test(t)) return 'ga_twin';
+  if(/^(BE20|B350|B190|C208|C212|C441|PC12|PC6|TBM|AT7|AT4|AT5|DHC|DH8|D28|SF34|SW4|E110|E120|SB20|F406|LNP4|P46T)/.test(t)) return 'turboprop';
+  if(/^(CRJ|E13|E14|E17|E45|E70|E75|RJ1|RJ85|B461|B462|B463|ATR|F70|F100)/.test(t)) return 'regional';
+  if(/^(C25|C50|C51|C52|C55|C56|C68|C70|C75|CL30|CL35|CL60|CL65|GLF|GALX|GLEX|GL5|GL7|G150|G280|LJ|H25|HA4T|HDJT|FA|F2TH|F900|FA7X|FA8X|PRM|BE40|E50P|E55P|E545|E550|E54|SF50|C500|C510|C525|C526|ASTR|WW24)/.test(t)) return 'bizjet';
+  if(/^(B74|B77|B78|B76|A33|A34|A35|A38|A30|A310|A311|MD11|DC10|IL9|IL76|B70|A124)/.test(t)) return 'widebody';
+  if(/^(B73|B71|B72|B37|B38|B39|A19|A20|A21|A22|A318|A319|A320|A321|A220|BCS|B75|MD8|MD9|E190|E195|E290|E295|C919|SU9)/.test(t)) return 'narrowbody';
+  if(cat==='A5'||cat==='A4') return 'widebody';
+  if(cat==='A3') return 'narrowbody';
+  if(cat==='A2') return 'bizjet';
+  if(cat==='A1'||cat==='B1') return 'ga_single';
+  return 'generic';
+}
+
+// operator class -> colour. commercial = airliner, private = GA/business, heli = rotor.
+function planeClass(ac){
+  const cat=(ac.category||'').toUpperCase();
+  const cs=(ac.flight||'').trim().toUpperCase(), reg=(ac.r||'').toUpperCase();
+  const own=(ac.ownOp||'').toUpperCase();
+  if(/\b(AIR FORCE|ARMY|NAVY|MARINE|NATIONAL GUARD|COAST GUARD|USAF|MILITARY)\b/.test(own)
+     || /^(RCH|REACH|PAT\d|EVAC|SPAR|CNV|GRZLY|SLAM|RONIN|MOOSE|GUARD)/.test(cs)) return 'mil';
+  if(cat==='A7') return 'heli';
+  // fractional / charter ops (NetJets, Flexjet, Jet Linx, Wheels Up...) fly airline-style
+  // callsigns but are PRIVATE bizjets to any normal viewer -> amber, not airline blue.
+  if(/^(EJA|LXJ|NJM|JTL|EJM|WUP)/.test(cs)) return 'private';
+  if(cat==='A3'||cat==='A4'||cat==='A5') return 'commercial';
+  const airlineCS = /^[A-Z]{3}\d/.test(cs) && cs!==reg;     // ICAO airline callsign
+  if(airlineCS && cat!=='A1') return 'commercial';
+  return 'private';
+}
+
+// the airline (if recognised) from the callsign's 3-letter ICAO prefix
+function airline(ac){
+  const m = (ac.flight||'').trim().toUpperCase().match(/^[A-Z]{3}/);
+  return m ? AIRLINES[m[0]] : null;
+}
+// body colour is the OPERATOR class only — every commercial plane stays the same
+// blue; the specific airline is shown as an accent (a coloured tail / dot-ring).
+function planeColor(ac){ return CAT[planeClass(ac)] || CAT.private; }
+// the airline's brand colour, used as an accent only (null if unknown / non-commercial)
+function airlineAccent(ac){
+  if(planeClass(ac)!=='commercial') return null;
+  const al = airline(ac);
+  return al ? al.c : null;
+}
+
+function silSize(fam, z){
+  const base = SIL_BASE[fam]||27;
+  // single zoom break: compact when zoomed out, larger when zoomed in to inspect.
+  // one break = at most one icon-rebuild per scroll gesture (keeps fast zoom smooth).
+  return Math.round(base * (z>=8 ? 1.12 : 0.82));
+}
+function silSVG(ac, fam, size, color){
+  return `<svg width="${size}" height="${size}" viewBox="0 0 100 100"`
+       + ` style="transform:rotate(${ac.track||0}deg)"><g fill="${color}">`
+       + `${SIL[fam]||SIL.generic}</g></svg>`;
+}
+function silIcon(ac, fam, col, size, withLabel){
+  const tag = withLabel ? `<div class="tag">${((ac.flight||'').trim()||ac.r||'')}</div>` : '';
+  return L.divIcon({className:'plane', iconSize:[size,size], iconAnchor:[size/2,size/2],
+    html:`<div class="sil" style="color:${col}">${silSVG(ac,fam,size,'currentColor')}${tag}</div>`});
+}
+// the favourite: its real silhouette, in the spotlight colour, with ring + label.
+// est=true => dead-reckoned ghost: dimmed, grey "EST ·" label, no pulsing ring.
+function favIcon(ac, est){
+  const fam = family(ac), size = Math.max(36, silSize(fam, map.getZoom())+8);
+  const ring = est ? '' : '<div class="fav-ring"></div>';
+  const label = (est?'EST · ':'') + (ac.r||fav);
+  return L.divIcon({className: est?'plane fav fav-est':'plane fav', iconSize:[size,size], iconAnchor:[size/2,size/2],
+    html:`<div class="fav-wrap">${silSVG(ac,fam,size,FAV_COLOR)}${ring}<div class="fav-label">${label}</div></div>`});
+}
+
+// is "ac" the favourite?  match by registration OR hex, or by type: prefix
+function isFav(ac){
+  if(!fav) return false;
+  if(fav.startsWith('TYPE:')) return (ac.t||'').toUpperCase()===fav.slice(5);
+  return (ac.r||'').toUpperCase()===fav || (ac.hex||'').toUpperCase()===fav;
+}
+
+function fmt(n,suff=''){return (n==null||n==='')?'—':(n+suff);}
+
+// helper: origin->destination row from stored fields (already geo-validated when saved)
+function routeODfromStored(st){
+  if(typeof st.dLat!=='number') return '';
+  return `<div class="route-od"><b>${st.oI||'?'}</b> <span class="cty">${st.oM||''}</span>`
+    + `<span class="arr">→</span><b>${st.dI||'?'}</b> <span class="cty">${st.dM||''}</span></div>`;
+}
+
+function renderCard(state, data, route, est){
+  if(razorCardActive) return;          // the Razor Crest easter egg owns the card right now
+  if(state==='off'){ $card.classList.remove('show'); return; }
+
+  // ===== OFFLINE / ESTIMATED states (data = stored last-known state) =====
+  if(state==='enroute'||state==='lastknown'||state==='arrived'||state==='none'){
+    const st = data, reg = (st&&st.reg) || fav;
+    if(state==='none' || !st){
+      $card.innerHTML = `
+        <div class="reg">${reg}</div>
+        <span class="badge b-none">NO SIGNAL</span>
+        <div class="route" style="margin-top:14px">
+          Not transmitting, and no recent track to estimate from. The frame
+          will spotlight ${reg} the moment it’s back in the air.</div>`;
+      $card.classList.add('show'); return;
+    }
+    const routeOD = routeODfromStored(st);
+    const ago = agoStr(est?est.elapsedMs:(Date.now()-(st.ts||Date.now())));
+    if(state==='arrived'){
+      $card.innerHTML = `
+        <div class="reg">${reg}</div>
+        <span class="badge b-arr">LIKELY LANDED</span>
+        ${routeOD}
+        <dl>
+          <dt>Callsign</dt><dd>${fmt(st.flight)}</dd>
+          <dt>Type</dt><dd>${fmt(st.desc||st.t)}</dd>
+          <dt>Operator</dt><dd>${fmt(st.ownOp)}</dd>
+        </dl>
+        <div class="est-note">Last tracked ${ago} ago approaching ${st.dM||st.dI||'destination'} — estimated to have landed. Re-spotlights on her next flight.</div>`;
+      $card.classList.add('show'); return;
+    }
+    const badge = state==='enroute' ? ['b-est','ESTIMATED POSITION'] : ['b-est','LAST KNOWN'];
+    let dyn;
+    if(state==='enroute' && est){
+      const eta = est.etaMin!=null ? (est.etaMin>=60? Math.floor(est.etaMin/60)+'h '+(est.etaMin%60)+'m' : est.etaMin+' min') : '—';
+      dyn = `<dt>Progress</dt><dd>${est.pct!=null?est.pct+'%':'—'}</dd>
+             <dt>To ${st.dI||'dest'}</dt><dd>${est.remNm!=null?est.remNm.toLocaleString()+' nm':'—'}</dd>
+             <dt>Est. arrival</dt><dd>~${eta}</dd>`;
+    }else{
+      const alt = (st.alt==='ground')?'on ground':(st.alt!=null? Number(st.alt).toLocaleString()+' ft':'—');
+      dyn = `<dt>Last alt</dt><dd>${alt}</dd>`;
+    }
+    $card.innerHTML = `
+      <div class="reg">${reg}</div>
+      <span class="badge ${badge[0]}">${badge[1]}</span>
+      ${routeOD}
+      <dl>
+        <dt>Callsign</dt><dd>${fmt(st.flight)}</dd>
+        <dt>Type</dt><dd>${fmt(st.desc||st.t)}</dd>
+        ${dyn}
+        <dt>Operator</dt><dd>${fmt(st.ownOp)}</dd>
+      </dl>
+      <div class="est-note">${state==='enroute'
+        ? `Position estimated from last contact ${ago} ago, projected along the route. Live tracking resumes automatically when ${reg} transmits again.`
+        : `Last contact ${ago} ago — showing last known position. Updates when signal returns.`}</div>`;
+    $card.classList.add('show'); return;
+  }
+
+  // ===== LIVE states (data = live aircraft) =====
+  let badge;
+  if(state==='frame') badge=['b-frame','IN FRAME'];
+  else if(state==='near') badge=['b-near','AIRBORNE · OFF-FRAME'];
+  else badge=['b-gnd','ON THE GROUND'];
+  const ac = data;
+  const alt = ac.alt_baro==='ground' ? 'on ground'
+            : (ac.alt_baro!=null? ac.alt_baro.toLocaleString()+' ft' : '—');
+  const spd = ac.gs!=null? Math.round(ac.gs)+' kt' : '—';
+  const dist = (ac.lat!=null)? Math.round(haversine(MI.lat,MI.lon,ac.lat,ac.lon)*0.539)+' nm from center' : '';
+  // origin -> destination, only when adsbdb's route actually matches where she is (geo-gated,
+  // same check as the click popup) so the terminals shown are accurate, never a stale route.
+  let routeOD='';
+  if(route && route.origin && route.destination && routeFits(ac, route)){
+    const o=route.origin, d=route.destination;
+    routeOD = `<div class="route-od"><b>${o.iata_code||o.icao_code||'?'}</b> <span class="cty">${o.municipality||''}</span>`
+      + `<span class="arr">→</span><b>${d.iata_code||d.icao_code||'?'}</b> <span class="cty">${d.municipality||''}</span></div>`;
+  }
+  $card.innerHTML = `
+    <div class="reg">${ac.r||fav}</div>
+    <span class="badge ${badge[0]}">${badge[1]}</span>
+    ${routeOD}
+    <dl>
+      <dt>Callsign</dt><dd>${fmt((ac.flight||'').trim())}</dd>
+      <dt>Type</dt><dd>${fmt(ac.desc||ac.t)}</dd>
+      <dt>Altitude</dt><dd>${alt}</dd>
+      <dt>Speed</dt><dd>${spd}</dd>
+      <dt>Operator</dt><dd>${fmt(ac.ownOp)}</dd>
+    </dl>
+    ${dist?`<div class="route">${dist}</div>`:''}`;
+  $card.classList.add('show');
+}
+
+// her plane's route, cached per callsign so we don't re-hit adsbdb every 6s cycle
+let favRoute = null, favRouteCS = null;
+async function getFavRoute(cs){
+  if(!cs) return null;
+  if(cs===favRouteCS) return favRoute;
+  favRouteCS = cs;
+  favRoute = await getRoute(cs);
+  return favRoute;
+}
+
+// ---- the main loop: fetch, then render() paints what we got ----
+async function cycle(){
+  try{
+    const j = await getPlanes();
+    latestPlanes = (j.ac||j.aircraft||[])
+      .filter(a=>typeof a.lat==='number' && !String(a.category||'').startsWith('C')); // drop ground vehicles
+  }catch(e){ /* keep last frame on a hiccup */ }
+  const favInFrame = render();
+
+  // ---- the favourite: keep it spotlighted on the map WHEREVER it is ----
+  // If it's outside the Michigan frame, ask the dedicated reg endpoint for its real
+  // position and draw the marker there anyway. No auto-pan — use the centre buttons.
+  let fd = favInFrame;
+  if(!fd && fav && !fav.startsWith('TYPE:')){
+    try{ fd = (await getFav(fav)).ac?.[0] || null; }catch(e){ fd = null; }
+  }
+  const hasPos = fd && typeof fd.lat==='number';
+
+  if(hasPos){
+    // ---- LIVE: real marker, save state for offline estimation, live card ----
+    pushHistory(fd); favPos = [fd.lat, fd.lon];
+    updateFavourite(fd, false);
+    // following? keep her centred. setView(animate:false) = imperceptible few-px nudge each
+    // cycle; a user drag/wheel sets following=false so it stops the instant you grab the map.
+    if(following && favPos){ map.setView(favPos, map.getZoom(), {animate:false}); }
+    let favRt = null;
+    const fcs=(fd.flight||'').trim(); if(fcs) favRt = await getFavRoute(fcs);
+    saveFavState(fd, favRt);                       // persist last-known good state + validated route
+    if(!fav) renderCard('off');
+    else if(favInFrame) renderCard('frame', fd, favRt);
+    else renderCard(fd.alt_baro==='ground' ? 'ground' : 'near', fd, favRt);
+    return;
+  }
+
+  // ---- OFFLINE: no live signal -> dead-reckon from stored last-contact state ----
+  if(!fav){ updateFavourite(null); renderCard('off'); return; }
+  const stored = loadFavState();
+  const est = stored ? estimateFav(stored) : null;
+  if(est && (est.tier==='enroute' || est.tier==='lastknown')){
+    const ghost = {r:stored.reg, hex:(stored.hex||'EST'), flight:stored.flight, t:stored.t,
+                   desc:stored.desc, lat:est.lat, lon:est.lon, track:est.track};
+    favPos = [est.lat, est.lon];
+    updateFavourite(ghost, true, est.from);        // est.from is undefined for lastknown -> no line
+    if(following && favPos){ map.setView(favPos, map.getZoom(), {animate:false}); }
+    renderCard(est.tier, stored, null, est);
+  }else if(est && est.tier==='arrived'){
+    updateFavourite(null);
+    favPos = [stored.dLat, stored.dLon];
+    renderCard('arrived', stored, null, est);
+  }else{
+    updateFavourite(null);
+    renderCard('none', stored||null);
+  }
+}
+
+// keep a short rolling position history per plane (for trails)
+function pushHistory(ac){
+  let h = history.get(ac.hex);
+  if(!h){ h = []; history.set(ac.hex, h); }
+  const last = h[h.length-1];
+  if(!last || Math.abs(last[0]-ac.lat)>1e-4 || Math.abs(last[1]-ac.lon)>1e-4){
+    h.push([ac.lat, ac.lon]);
+    const cap = isFav(ac) ? FAV_TRAIL_LEN : TRAIL_LEN;   // her plane keeps a much longer history
+    while(h.length > cap) h.shift();
+  }
+}
+function updateTrail(hex, col, weight, opacity){
+  const h = history.get(hex);
+  if(!h || h.length < 2){ return; }
+  let t = trails.get(hex);
+  if(!t){
+    t = L.polyline(h.slice(),{renderer:trailRenderer, color:col, weight:weight,
+          opacity:opacity, interactive:false}).addTo(map);
+    trails.set(hex, t);
+  }else{
+    t.setLatLngs(h.slice());
+    if(t._c!==col){ t.setStyle({color:col}); }
+  }
+  t._c = col;
+}
+
+// ---- paint: every in-view plane is a SILHOUETTE (capped for perf); the overflow
+//      at the dense edges falls back to fast dots. Each plane is one OR the other. ----
+function cullTrail(hex){ const t=trails.get(hex); if(t){ map.removeLayer(t); trails.delete(hex); } history.delete(hex); }
+
+function upsertDot(ac, col){
+  let d = dots.get(ac.hex);
+  if(!d){
+    d = L.circleMarker([ac.lat,ac.lon],{renderer:planesRenderer, radius:4,
+          weight:0, fillColor:col, fillOpacity:.92, bubblingMouseEvents:false}).addTo(map);
+    d.on('click', onPlaneClick); dots.set(ac.hex, d);
+  }else if(d._c!==col){
+    d.setLatLng([ac.lat,ac.lon]); d.setStyle({fillColor:col});
+  }else d.setLatLng([ac.lat,ac.lon]);
+  d._c = col; d._ac = ac;
+}
+function upsertSil(ac, z, withLabel){
+  const fam = family(ac), col = planeColor(ac), size = silSize(fam, z);
+  const key = fam + col + size + (withLabel?'L':'');
+  let m = icons.get(ac.hex);
+  if(!m){
+    m = L.marker([ac.lat,ac.lon],{icon:silIcon(ac,fam,col,size,withLabel),keyboard:false}).addTo(map);
+    m.on('click', onPlaneClick); m._key = key; icons.set(ac.hex, m);
+  }else if(m._key !== key){
+    m.setIcon(silIcon(ac,fam,col,size,withLabel)); m._key = key; m.setLatLng([ac.lat,ac.lon]);
+  }else{
+    m.setLatLng([ac.lat,ac.lon]);
+    const svg = m.getElement()?.querySelector('svg');
+    if(svg) svg.style.transform = `rotate(${ac.track||0}deg)`;
+  }
+  m._ac = ac;
+}
+
+function render(){
+  const planes = latestPlanes;
+  const z = map.getZoom(), withLabel = z >= LABEL_ZOOM, useSil = !inMotion && z >= SIL_ZOOM;
+  const bounds = map.getBounds();
+  const seen = new Set();
+  let favInFrame = null;
+  const inView = [];
+
+  // pass 1: history, favourite, and gather the in-view silhouette candidates
+  for(const ac of planes){
+    if(!ac.hex || typeof ac.lat!=='number') continue;
+    if(hidden[planeClass(ac)] && !isFav(ac)) continue;   // operator class toggled off in the legend
+    pushHistory(ac);
+    if(isFav(ac)){ favInFrame = ac; continue; }
+    seen.add(ac.hex);
+    if(useSil && bounds.contains([ac.lat,ac.lon])) inView.push(ac);
+  }
+  // pick the silhouette set — nearest to centre, capped; the rest fall back to dots
+  const silSet = new Set();
+  if(useSil){
+    let pool = inView;
+    if(pool.length > MAX_SIL){
+      const c = map.getCenter();
+      pool = pool.slice().sort((a,b)=>
+        Math.hypot(a.lat-c.lat,a.lon-c.lng) - Math.hypot(b.lat-c.lat,b.lon-c.lng)).slice(0, MAX_SIL);
+    }
+    for(const a of pool) silSet.add(a.hex);
+  }
+  // pass 2: each plane is a silhouette XOR a dot (never both)
+  for(const ac of planes){
+    if(!ac.hex || typeof ac.lat!=='number' || isFav(ac)) continue;
+    if(hidden[planeClass(ac)]) continue;                 // toggled off -> cull loop removes it
+    const col = planeColor(ac);
+    if(silSet.has(ac.hex)){
+      if(dots.has(ac.hex)){ map.removeLayer(dots.get(ac.hex)); dots.delete(ac.hex); }
+      upsertSil(ac, z, withLabel);
+    }else{
+      if(icons.has(ac.hex)){ map.removeLayer(icons.get(ac.hex)); icons.delete(ac.hex); }
+      upsertDot(ac, col);
+    }
+    updateTrail(ac.hex, col, 1.4, .34);
+  }
+  // cull planes that disappeared from the feed
+  for(const [hex,d] of dots){ if(!seen.has(hex)){ map.removeLayer(d); dots.delete(hex); cullTrail(hex); } }
+  for(const [hex,m] of icons){ if(!seen.has(hex)){ map.removeLayer(m); icons.delete(hex); cullTrail(hex); } }
+
+  updateAirports();
+  countEl.innerHTML = `<b>${planes.length}</b> aircraft in frame`;
+  return favInFrame;   // the favourite marker is drawn from cycle() (works off-frame too)
+}
+
+// the favourite: a highlighted silhouette. est=true draws the dead-reckoned ghost (dimmed,
+// dashed projection line, frozen real trail left in place). projFrom = last-contact [lat,lon].
+function updateFavourite(ac, est, projFrom){
+  if(!ac){
+    if(favMarker){ map.removeLayer(favMarker); favMarker = null; }
+    if(favTrailHex){ const t=trails.get(favTrailHex); if(t){map.removeLayer(t);trails.delete(favTrailHex);} favTrailHex=null; }
+    clearEstLine();
+    centeredFav = null; return;
+  }
+  const fam = family(ac), size = Math.max(36, silSize(fam, map.getZoom())+8);
+  const key = ac.hex + fam + size + (est?'E':'');
+  if(!favMarker){
+    favMarker = L.marker([ac.lat,ac.lon],{icon:favIcon(ac,est),zIndexOffset:1000,keyboard:false}).addTo(map);
+    favMarker.on('click', onPlaneClick); favMarker._key = key;
+  }else if(favMarker._key !== key){
+    favMarker.setIcon(favIcon(ac,est)); favMarker._key = key; favMarker.setLatLng([ac.lat,ac.lon]);
+  }else{
+    favMarker.setLatLng([ac.lat,ac.lon]);
+    const svg = favMarker.getElement()?.querySelector('svg');
+    if(svg) svg.style.transform = `rotate(${ac.track||0}deg)`;
+  }
+  favMarker._ac = ac;
+  if(est){
+    // ESTIMATED: draw the dashed projection from last contact; leave the real trail frozen
+    // (it stops growing when she goes dark — an honest "this is the last real data" breadcrumb).
+    if(projFrom) drawEstLine(projFrom,[ac.lat,ac.lon]); else clearEstLine();
+  }else{
+    // LIVE: her bright wide trail; drop the projection line + clean a changed-favourite trail
+    clearEstLine();
+    if(favTrailHex && favTrailHex!==ac.hex){ const ot=trails.get(favTrailHex); if(ot){map.removeLayer(ot);trails.delete(favTrailHex);} }
+    favTrailHex = ac.hex;
+    updateTrail(ac.hex, FAV_COLOR, 5, .65);   // her trail: 2x+ wider than the standard 2.2
+  }
+}
+
+// ---- airport beacons: build only the in-frame ones (zoom-gated for perf) ----
+function aptIcon(a){
+  return L.divIcon({className: a.s>=3 ? 'apt big' : 'apt', iconSize:[10,10], iconAnchor:[5,5],
+    html:`<div class="apt-ring"></div><div class="apt-core"></div><div class="apt-label">${a.i}</div>`});
+}
+function updateAirports(){
+  const z = map.getZoom(), b = map.getBounds(), keep = new Set();
+  for(const a of AIRPORTS){
+    if(a.s < 3 && z < APT_MED_ZOOM) continue;            // regionals only when zoomed in
+    if(!b.contains([a.y, a.x])) continue;                // only build what's in frame
+    keep.add(a.i);
+    if(!aptMarkers.has(a.i)){
+      aptMarkers.set(a.i, L.marker([a.y,a.x],{icon:aptIcon(a), pane:'airports',
+        interactive:false, keyboard:false}).addTo(map));
+    }
+  }
+  for(const [k,m] of aptMarkers){ if(!keep.has(k)){ map.removeLayer(m); aptMarkers.delete(k); } }
+}
+
+// ---- click a plane -> a popup with flight #, route, type, airline, photo ----
+let detailSeq = 0;
+function onPlaneClick(e){
+  const ac = e.target && e.target._ac;
+  if(ac) openDetail(ac, e.target.getLatLng ? e.target.getLatLng() : e.latlng);
+}
+function openDetail(ac, latlng){
+  const seq = ++detailSeq;
+  const pop = L.popup({className:'plane-pop', maxWidth:300, minWidth:200, autoPanPadding:[34,70]})
+    .setLatLng(latlng).setContent(detailHTML(ac, undefined, undefined)).openOn(map);
+  const cs = (ac.flight||'').trim();
+  Promise.all([ cs?getRoute(cs):Promise.resolve(null), ac.r?getAC(ac.r):Promise.resolve(null) ])
+    .then(([route, acd])=>{ if(seq===detailSeq && map.hasLayer(pop)) pop.setContent(detailHTML(ac, route, acd)); });
+}
+function airportBit(a){
+  return a ? `<b>${a.iata_code||a.icao_code||'?'}</b> <span class="city">${a.municipality||a.name||''}</span>` : '?';
+}
+function detailHTML(ac, route, acd){
+  const csICAO = (ac.flight||'').trim();
+  // friendlier boarding-pass # (DL2591 vs DAL2591) — but ONLY if adsbdb returned a PROPER IATA
+  // flight number with an airline letter prefix. It sometimes hands back a bare number ("2394"
+  // for Porter, "621" for Flair) which reads worse than the ICAO callsign — guard for a letter.
+  const csIATA = (route && route.callsign_iata && /[A-Za-z]/.test(route.callsign_iata)) ? route.callsign_iata : null;
+  const cs = csIATA || csICAO || ac.r || '—';
+  const alObj = airline(ac);
+  // prefer the LOCAL airline name over adsbdb's: adsbdb mislabels shared ICAO codes
+  // (e.g. Porter PTR -> "Nova Scotia Dept of Lands and Forests"). Local map wins when known.
+  const al = (alObj&&alObj.n) || (route&&route.airline&&route.airline.name) || '';
+  const alColor = alObj && alObj.c;          // colour the airline name by its brand
+  const o = route&&route.origin, d = route&&route.destination;
+  const type = (acd&&acd.type) || ac.desc || ac.t || '—';
+  // on airliners the feed's "operator" is usually a leasing trust (BANK OF UTAH TRUSTEE);
+  // the real airline is already the chip, so drop the trust noise. Keep owner for GA/unknown.
+  const isComm = planeClass(ac)==='commercial';
+  const op = (isComm && al) ? '' : ((acd&&acd.registered_owner) || ac.ownOp || '');
+  const photo = acd&&acd.url_photo_thumbnail;
+  const icaoTag = (csIATA && csICAO && csIATA!==csICAO) ? `<span class="pop-icao">${csICAO}</span>` : '';
+  let routeRow;
+  if(route===undefined) routeRow = `<div class="pop-route dim">looking up route…</div>`;
+  else if(o && d && routeFits(ac, route)) routeRow = `<div class="pop-route">${airportBit(o)} <span>→</span> ${airportBit(d)}</div>`;
+  else routeRow = `<div class="pop-route dim">route unavailable</div>`;   // missing or stale (doesn't match position)
+  return `<div class="pop-cs">${cs}${icaoTag}${al?`<span class="pop-al"${alColor?` style="color:${alColor}"`:''}>${al}</span>`:''}</div>`
+       + routeRow
+       + `<div class="pop-meta">${type}${op?` · ${op}`:''}</div>`
+       + (photo?`<img class="pop-img" src="${photo}" referrerpolicy="no-referrer" onerror="this.remove()">`:'');
+}
+async function getRoute(cs){
+  try{ const j = (await tryProxy('/api/route?cs='+encodeURIComponent(cs)))
+        || await (await fetch(`https://api.adsbdb.com/v0/callsign/${encodeURIComponent(cs)}`)).json();
+    return (j && j.response && j.response.flightroute) || null; }catch(e){ return null; }
+}
+async function getAC(reg){
+  try{ const j = (await tryProxy('/api/ac?reg='+encodeURIComponent(reg)))
+        || await (await fetch(`https://api.adsbdb.com/v0/aircraft/${encodeURIComponent(reg)}`)).json();
+    return (j && j.response && j.response.aircraft) || null; }catch(e){ return null; }
+}
+
+// ============================================================================
+//  Razor Crest — a hidden easter egg. A faint red ghost plane drifts slowly and
+//  randomly around Michigan, with NO label. Click it and: (1) the Cyrano de
+//  Bergerac lines appear in a popup, (2) a custom message takes over the info
+//  card (it isn't a real aircraft, so there's no flight data), and (3) the ghost
+//  vanishes and reappears somewhere new. Hard to spot unless you really look.
+// ============================================================================
+// Harrison's hidden messages for Allie (from "Harrisons Lines.rtf"). Each click draws ONE,
+// weighted by rarity: per his design, more #'s = rarer — but spread MORE EVENLY (Christian's
+// call) at tiers w: 4 / 3 / 2 / 1, so the rarest is only ~4x less likely than the common ones
+// (was 8x). Common notes still surface most; the three "super secret" (####) stay the treasures.
+const RAZOR_MSGS = [
+  {w:4, t:"Happy Birthday Allie, I hope you enjoy looking at all these planes :)"},
+  {w:4, t:"I love you little lady!"},
+  {w:4, t:"You found me! You are goose"},
+  {w:4, t:"rain rain rain"},
+  {w:4, t:"You are the best thing to ever happen to me &lt;3"},
+  {w:3, t:"GHOST PLANE GHOST PLANE YAY"},
+  {w:3, t:"You have SUPER pretty eyes! Mmmm Heterochromia."},
+  {w:3, t:"I will never stop thinking about you my love"},
+  {w:2, t:"You look REALLY pretty like all of the time btw. Hehehe"},
+  {w:2, t:"You are GORGEOUS little lady!"},
+  {w:2, t:"I am so excited to keep dating you lady"},
+  {w:1, t:"Super secret message number one of three… YOU ARE SO AMAZING I kinda wanna be with you forever"},
+  {w:1, t:"Super secret message number two of three… GOOSE GOOSE GOOSE GOOSE. GHOST SHIP WOOHOO"},
+  {w:1, t:"Super secret message number three of three… I love you more than I ever thought I could love anyone. You changed the way I understand myself and my life. You make me appreciate myself and you keep me accountable. I love you I love you I love you."}
+];
+// weighted random draw — fewer #'s (higher w) appear more often
+function razorPick(){
+  const total = RAZOR_MSGS.reduce((s,m)=>s+m.w, 0);
+  let r = Math.random()*total;
+  for(const m of RAZOR_MSGS){ if((r -= m.w) < 0) return m.t; }
+  return RAZOR_MSGS[0].t;
+}
+// a small twin-pod gunship silhouette (nose up), drawn red at low opacity
+const RAZOR_SVG = `<rect x="46" y="14" width="8" height="70" rx="3"/><path d="M50 7 L45.5 19 L54.5 19 Z"/><rect x="22" y="31" width="7" height="38" rx="3"/><rect x="71" y="31" width="7" height="38" rx="3"/><rect x="27" y="45" width="46" height="6" rx="3"/><rect x="41" y="82" width="18" height="5" rx="2.5"/>`;
+const GHOST_BOX = {latMin:42.05, latMax:46.9, lonMin:-89.6, lonMax:-82.6};   // stays inside the Michigan frame
+const GHOST_DPS = 0.018;     // degrees/sec — a slow drift; constant speed regardless of timer throttling
+const GHOST_MIN_ZOOM = 8;    // only VISIBLE when fairly zoomed in (default view is z6) — keeps it hidden
+let ghost = null, ghostMarker = null, ghostLast = Date.now();
+
+function ghostRand(){ return [GHOST_BOX.latMin + Math.random()*(GHOST_BOX.latMax-GHOST_BOX.latMin),
+                              GHOST_BOX.lonMin + Math.random()*(GHOST_BOX.lonMax-GHOST_BOX.lonMin)]; }
+function ghostBearing(a,b,c,d){ return (_bearing(a,b,c,d)*180/Math.PI + 360) % 360; }
+function ghostIcon(){
+  const s = 30;
+  return L.divIcon({className:'plane ghost', iconSize:[s,s], iconAnchor:[s/2,s/2],
+    html:`<div class="sil" style="color:#ff2b2b"><svg width="${s}" height="${s}" viewBox="0 0 100 100" style="transform:rotate(${ghost?ghost.track:0}deg)"><g fill="currentColor">${RAZOR_SVG}</g></svg></div>`});
+}
+function ghostSpawn(){
+  const [lat,lon]=ghostRand(), [tLat,tLon]=ghostRand();
+  ghost = {lat,lon,tLat,tLon,track:ghostBearing(lat,lon,tLat,tLon)};
+}
+function ghostRender(){
+  if(!ghost) return;
+  // create the marker once (handler bound once) but only SHOW it when fairly zoomed in.
+  // It keeps drifting in the background while hidden, so it's in a fresh spot when you find it.
+  if(!ghostMarker){
+    ghostMarker = L.marker([ghost.lat,ghost.lon],{icon:ghostIcon(),zIndexOffset:450,keyboard:false});
+    ghostMarker.on('click', onGhostClick);
+  }
+  if(map.getZoom() >= GHOST_MIN_ZOOM){
+    if(!map.hasLayer(ghostMarker)) ghostMarker.addTo(map);
+    ghostMarker.setLatLng([ghost.lat,ghost.lon]);
+    const svg = ghostMarker.getElement() && ghostMarker.getElement().querySelector('svg');
+    if(svg) svg.style.transform = `rotate(${ghost.track}deg)`;
+  }else if(map.hasLayer(ghostMarker)){
+    map.removeLayer(ghostMarker);   // zoomed out -> hide it
+  }
+}
+map.on('zoomend', ghostRender);     // toggle visibility the instant zoom crosses the threshold
+function ghostTick(){
+  if(!ghost) return;
+  const now=Date.now(), dt=Math.min(2000, now-ghostLast)/1000; ghostLast=now;
+  const dLat=ghost.tLat-ghost.lat, dLon=ghost.tLon-ghost.lon, dist=Math.hypot(dLat,dLon);
+  const step=GHOST_DPS*dt;
+  if(dist < Math.max(step*1.5, 0.02)){                 // reached the target -> pick a new random one
+    const [tLat,tLon]=ghostRand(); ghost.tLat=tLat; ghost.tLon=tLon;
+  }else{
+    ghost.lat += (dLat/dist)*step; ghost.lon += (dLon/dist)*step;
+  }
+  ghost.track = ghostBearing(ghost.lat,ghost.lon,ghost.tLat,ghost.tLon);
+  ghostRender();
+}
+function onGhostClick(e){
+  L.DomEvent.stopPropagation(e);
+  const msg = razorPick();                          // one weighted-random hidden message
+  // 1) the message, as a popup at the ghost's current spot
+  const html = `<div class="razor-pop"><div class="razor-title">Razor Crest</div>`
+    + `<div class="razor-line">${msg}</div></div>`;
+  const pop = L.popup({className:'plane-pop razor', maxWidth:340, minWidth:250, autoPanPadding:[34,70]})
+    .setLatLng(ghostMarker.getLatLng()).setContent(html).openOn(map);
+  pop._razor = true;
+  // 2) the info card explains it isn't a real plane (no flight data) + nudges the hunt
+  razorCardActive = true;
+  $card.innerHTML = `<div class="reg">Razor Crest</div>`
+    + `<span class="badge b-ghost">GHOST CONTACT</span>`
+    + `<div class="ghost-msg">Not a real aircraft — a phantom on the wire. No flight data, only hidden messages. The rarer ones are harder to catch…</div>`
+    + `<div class="est-note">Blink and it’s gone. Find it again.</div>`;
+  $card.classList.add('show');
+  // 3) vanish from here, reappear somewhere else random
+  ghostSpawn(); ghostRender();
+}
+// when the Razor popup closes, hand the card back to the favourite
+map.on('popupclose', e=>{ if(e.popup && e.popup._razor){ razorCardActive=false; cycle(); } });
+ghostSpawn(); ghostRender();
+setInterval(ghostTick, 120);
+
+// ---- dev live-reload: poll the file version and reload the page when it changes ----
+(function(){ let base=null;
+  setInterval(async()=>{ try{ const r=await fetch('/api/version',{cache:'no-store'}); if(!r.ok) return;
+    const v=(await r.json()).v; if(base===null) base=v; else if(v!==base) location.reload(); }catch(e){} }, 2000);
+})();
+
+setInterval(()=>{document.getElementById('clock').textContent =
+  new Date().toLocaleTimeString('en-US',{hour12:false});},1000);
+
+cycle();
+setInterval(cycle, REFRESH_MS);
+</script>
+</body>
+</html>
