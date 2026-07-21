@@ -1304,13 +1304,25 @@ function saveTrails(){
     localStorage.setItem(TRAIL_STORE, JSON.stringify(o));
   }catch(e){}
 }
+// a trail belongs on the map only if its plane can still be fetched: head inside
+// the radar circle (+5% edge slack). Her global trail is exempt everywhere.
+function inFrameTrail(pts){
+  const head = pts[pts.length-1];
+  return head && haversine(MI.lat, MI.lon, head[0], head[1]) * NM_PER_KM <= MI_RADIUS * 1.05;
+}
 function loadTrails(){
   try{
     const o = JSON.parse(localStorage.getItem(TRAIL_STORE)); if(!o) return;
     const now = Date.now(), cutoff = now - 10*60*1000;   // ignore anything >10 min old
+    // her hex first — the geo filter below must never drop HER stored trail
+    let favHex = null;
+    try{ const fs = JSON.parse(localStorage.getItem(FAV_STORE_KEY)); if(fs && fs.hex) favHex = fs.hex; }catch(e){}
     for(const [hex, entry] of Object.entries(o)){
       const [cls, seen, pts] = entry;
       if(!seen || seen < cutoff || !pts || pts.length<2) continue;
+      // geo filter: stored trails from outside the CURRENT radius (old radius,
+      // planes that left the circle) stay dead — don't resurrect them on reload
+      if(hex !== favHex && !inFrameTrail(pts)) continue;
       // RESTART the grace window on restore (_seen=now): the 10-min staleness filter
       // already ran against the STORED value above. Without this the very first
       // render()'s 90s grace-cull deletes every just-restored trail whose plane isn't
@@ -1343,11 +1355,14 @@ function render(){
     commitAnim(ac.hex, ac.lat, ac.lon, ac.track,
                (ac.alt_baro!=='ground' && typeof ac.gs==='number') ? ac.gs : 0, now);
   }
-  // cull trails/history only after the GRACE window — edge-of-circle blinks and
-  // brief signal gaps no longer wipe a plane's trail
+  // cull trails/history of unseen planes: after the GRACE window (edge blinks and
+  // brief signal gaps don't wipe a mid-frame plane's trail) — or IMMEDIATELY if
+  // the trail's head is outside the radar circle (an exited plane isn't coming
+  // back with continuity; its orphan trail would linger visibly at the rim).
   const cutoff = Date.now() - TRAIL_GRACE_MS;
   for(const [hex,h] of history){
-    if(!seen.has(hex) && hex!==favTrailHex && (h._seen||0) < cutoff){
+    if(!seen.has(hex) && hex!==favTrailHex &&
+       ((h._seen||0) < cutoff || !inFrameTrail(h))){
       history.delete(hex); anim.delete(hex);
     }
   }
