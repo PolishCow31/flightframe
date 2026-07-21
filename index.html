@@ -156,6 +156,12 @@
   .apt.big .apt-ring{width:8px;height:8px;margin:-4px 0 0 -4px;border-color:#a9c4e0}
   .apt.big .apt-label{color:#dce8f7;font-size:10px;top:9px;letter-spacing:.14em}
   @keyframes apt{0%{transform:scale(1);opacity:.55}100%{transform:scale(4.5);opacity:0}}
+  /* ?nopulse=1 — DIAGNOSTIC: kill every infinite pulse animation. An always-running
+     CSS animation (even compositor-only transform/opacity) forces Chromium to
+     re-composite the whole page at 60Hz forever — the standing CPU cost on the Pi.
+     Rings' resting state is opacity:0, so animation:none simply hides them; the
+     static beacon cores and labels stay. */
+  body.nopulse .fav-ring,body.nopulse .ping-ring,body.nopulse .apt-ring{animation:none!important}
 </style>
 </head>
 <body>
@@ -415,6 +421,7 @@ L.marker([42.36837,-83.35271], {interactive:false, keyboard:false, zIndexOffset:
 // localStorage override, which would have been stuck with no UI to change it.)
 const params = new URLSearchParams(location.search);
 let fav = (params.get('fav') || 'N527DN').toUpperCase();
+if(params.has('nopulse')) document.body.classList.add('nopulse');   // diagnostic: see CSS
 
 // ---- legend toggles: tap an operator class to show/hide it ----
 document.querySelectorAll('#legend .tog[data-cls]').forEach(el=>{
