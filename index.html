@@ -911,6 +911,12 @@ const PlaneLayer = L.Layer.extend({
     const FADE = [.08,.16,.26,.38], FADE_FAV = [.18,.34,.52,.72], S = 300;
     for(const [hex,h] of history){
       const isF = hex===favTrailHex;
+      // ONLY PRESENT PLANES DRAW TRAILS (his rule): a plane that dropped off the
+      // feed keeps its history through the grace window (so a one-poll blink
+      // returns with its trail intact) but the trail isn't DRAWN headless while
+      // the plane is missing — no orphan stubs at the rim when planes exit the
+      // circle, no 90s ghosts mid-frame. Her global trail is exempt as always.
+      if(!isF && !liveHexes.has(hex)) continue;
       // PLANE LEADS THE PATH: while a glide is in flight, the newest committed fix
       // is where the sprite is HEADED, not where it is — so the static trail stops
       // one fix short, and the per-frame head connector (redrawPlanes) draws the
