@@ -65,8 +65,14 @@
     white-space:nowrap;color:var(--ink);font:600 9px/1 ui-monospace,Menlo,monospace;
     letter-spacing:.04em;text-shadow:0 1px 3px #000,0 0 3px #000;opacity:.82}
   .fav-wrap{position:relative}
+  /* rings are DUTY-CYCLED: no standing animation — JS fires a one-shot burst
+     (class .pp) every few seconds. An infinite CSS animation, even
+     transform/opacity-only, forces whole-page compositing at the display
+     refresh rate forever — measured at ~half a Pi core. Finished one-shot
+     animations cost nothing between bursts. */
   .fav-ring{position:absolute;left:50%;top:50%;width:54px;height:54px;margin:-27px 0 0 -27px;
-    border:2px solid var(--fav);border-radius:50%;animation:pulse 1.8s ease-out infinite;opacity:0}
+    border:2px solid var(--fav);border-radius:50%;opacity:0}
+  .fav-ring.pp{animation:pulse 1.8s ease-out 1}
   .fav-label{position:absolute;left:50%;top:calc(100% - 2px);transform:translateX(-50%);white-space:nowrap;
     background:var(--fav);color:#fff;font:700 11px/1 ui-monospace,Menlo,monospace;
     letter-spacing:.08em;padding:3px 7px;border-radius:6px;box-shadow:0 2px 8px #0008}
@@ -91,8 +97,9 @@
   .ping-core{position:absolute;left:50%;top:50%;width:9px;height:9px;margin:-4.5px 0 0 -4.5px;
     border-radius:50%;background:#2ee6c0;box-shadow:0 0 8px #2ee6c0}
   .ping-ring{position:absolute;left:50%;top:50%;width:11px;height:11px;margin:-5.5px 0 0 -5.5px;
-    border-radius:50%;border:2px solid #2ee6c0;animation:ping 2.6s ease-out infinite;opacity:0}
-  .ping-ring.d{animation-delay:1.3s}
+    border-radius:50%;border:2px solid #2ee6c0;opacity:0}
+  .ping-ring.pp{animation:ping 1.6s ease-out 1}
+  .ping-ring.d.pp{animation-delay:.5s}
   .ping-label{position:absolute;left:50%;top:11px;transform:translateX(-50%);white-space:nowrap;
     color:#2ee6c0;font:700 9px/1 ui-monospace,Menlo,monospace;letter-spacing:.18em;text-shadow:0 1px 4px #000}
   @keyframes ping{0%{transform:scale(1);opacity:.85}100%{transform:scale(7);opacity:0}}
@@ -149,7 +156,8 @@
   .apt-core{position:absolute;left:50%;top:50%;width:5px;height:5px;margin:-2.5px 0 0 -2.5px;
     border-radius:50%;background:#9fb4d2;box-shadow:0 0 5px #6f86a8}
   .apt-ring{position:absolute;left:50%;top:50%;width:6px;height:6px;margin:-3px 0 0 -3px;
-    border-radius:50%;border:1px solid #8aa0c4;animation:apt 3s ease-out infinite;opacity:0}
+    border-radius:50%;border:1px solid #8aa0c4;opacity:0}
+  .apt-ring.pp{animation:apt 1.6s ease-out 1}
   .apt-label{position:absolute;left:50%;top:7px;transform:translateX(-50%);white-space:nowrap;
     color:#9fb4d2;font:600 9px/1 ui-monospace,Menlo,monospace;letter-spacing:.1em;text-shadow:0 1px 3px #000}
   .apt.big .apt-core{width:7px;height:7px;margin:-3.5px 0 0 -3.5px;background:#cfe0f5;box-shadow:0 0 8px #7f9cc0}
@@ -428,6 +436,19 @@ L.marker([42.36837,-83.35271], {interactive:false, keyboard:false, zIndexOffset:
 const params = new URLSearchParams(location.search);
 let fav = (params.get('fav') || 'N527DN').toUpperCase();
 if(params.has('nopulse')) document.body.classList.add('nopulse');   // diagnostic: see CSS
+// duty-cycled pulses: all rings fire a synchronized one-shot burst (class .pp)
+// every PULSE_EVERY ms — a radar-sweep rhythm — then the compositor idles until
+// the next burst. Restart trick: drop the class, force a reflow, re-add.
+const PULSE_EVERY = 6000;
+function pulseBurst(){
+  document.querySelectorAll('.fav-ring,.ping-ring,.apt-ring').forEach(el=>{
+    el.classList.remove('pp'); void el.offsetWidth; el.classList.add('pp');
+  });
+}
+if(!document.body.classList.contains('nopulse')){
+  setInterval(pulseBurst, PULSE_EVERY);
+  setTimeout(pulseBurst, 800);   // first sweep shortly after load (markers exist by then)
+}
 // ?diag=1 — on-screen perf probe: display refresh (rAF/s), actual canvas redraw
 // rates, and the knobs that matter. One photo of this chip replaces an htop safari.
 let _dRaf=0, _dPlane=0, _dTrail=0;
