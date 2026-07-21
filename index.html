@@ -30,21 +30,6 @@
   #count{color:var(--dim)}
   #count b{color:var(--ink)}
 
-  /* ---- the "command": type a tail number to spotlight it ---- */
-  #cmd{position:absolute;z-index:1000;left:50%;transform:translateX(-50%);bottom:20px;
-    display:flex;align-items:center;gap:0;background:var(--panel);
-    border:1px solid rgba(255,255,255,.12);
-    border-radius:999px;padding:6px 6px 6px 16px;backdrop-filter:blur(8px);
-    box-shadow:0 10px 40px #000a}
-  #cmd label{color:var(--dim);letter-spacing:.18em;font-size:11px;margin-right:12px;white-space:nowrap}
-  #cmd input{background:transparent;border:0;outline:0;color:var(--ink);
-    font:600 15px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.12em;
-    width:150px;text-transform:uppercase}
-  #cmd input::placeholder{color:#55617a;letter-spacing:.08em;font-weight:400;text-transform:none}
-  #cmd button{border:0;cursor:pointer;border-radius:999px;padding:9px 16px;margin-left:6px;
-    font-weight:700;letter-spacing:.05em;background:var(--fav);color:#fff}
-  #cmd button:active{transform:scale(.96)}
-
   /* ---- status card for the spotlighted plane ---- */
   #card{position:absolute;z-index:1000;left:20px;bottom:20px;width:290px;
     background:var(--panel);border:1px solid rgba(255,255,255,.12);border-radius:16px;
@@ -131,6 +116,8 @@
   #legend .tog{cursor:pointer}
   #legend .tog.off{opacity:.32;text-decoration:line-through}
   #legend i.ln{width:14px;height:3px;border-radius:2px}
+  #legend i.grad{width:14px;height:5px;border-radius:2px;
+    background:linear-gradient(90deg,#2ee68b,#d9e032,#f07a26,#c44ae0,#4aa3ff)}
 
   /* ---- bottom-right control buttons (centre her plane / centre Livonia) ---- */
   #ctl{position:absolute;right:14px;bottom:26px;z-index:1000;display:flex;flex-direction:column;gap:8px}
@@ -193,13 +180,9 @@
   <div class="tog" data-cls="mil"><i style="background:#2e7d44"></i>Military</div>
   <div class="lh">Marker</div>
   <div><i style="background:#ff7d1a"></i>Her plane</div>
+  <div class="lh">Trails</div>
+  <div class="tog" id="alt-tog"><i class="grad"></i>Altitude colors</div>
 </div>
-
-<form id="cmd" autocomplete="off">
-  <label>TRACK</label>
-  <input id="reg" placeholder="her tail # — e.g. N172Q" maxlength="10" spellcheck="false">
-  <button type="submit">Spotlight</button>
-</form>
 
 <div id="ctl">
   <button id="btn-fav" type="button"><i style="background:var(--fav)"></i>Her plane</button>
@@ -215,8 +198,8 @@
  * - the "favourite" is resolved from:  ?fav=N123  ->  saved  ->  empty
  *   so on the real Pi you can configure it just by setting the kiosk URL.
  * ------------------------------------------------------------------ */
-const MI = {lat:44.6, lon:-85.0};
-const REFRESH_MS = 6000;
+const MI = {lat:42.36837, lon:-83.35271};   // Livonia — home is the radar centre
+const REFRESH_MS = 4000;                    // poll cadence; also the glide-tween window
 const API_DIRECT = 'https://api.airplanes.live/v2';   // used when no local proxy is present
 const MI_RADIUS = 250;                                 // nm; matches server.py
 
@@ -288,7 +271,7 @@ L.Map.addInitHook('addHandler','smoothWheelZoom',L.Map.SmoothWheelZoom);
 
 const map = L.map('map',{
     zoomControl:false, attributionControl:true,
-    minZoom:2, maxZoom:11,
+    minZoom:2, maxZoom:13,
     zoomSnap:0,
     scrollWheelZoom:false,                        // replaced by the smooth handler above
     smoothWheelZoom:true, smoothSensitivity:2,    // <- speed dial (higher = faster)
@@ -299,14 +282,14 @@ const map = L.map('map',{
     // off + noWrap tiles (below) = a single world copy: lighter on the Pi, and a plane crossing
     // the dateline simply reappears on the opposite edge instead of gliding across a wrapped copy.
     maxBounds:[[-85.05,-180],[85.05,180]], maxBoundsViscosity:1.0, worldCopyJump:false
-  }).setView([44.4,-85.0], 6);
+  }).setView([42.36837,-83.35271], 6);   // open centred on Livonia (home)
 // no +/- zoom buttons (removed per request)
 
 // dark "carto" basemap — free for reasonable personal use, makes planes pop
 L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{
   subdomains:'abcd', maxZoom:19, noWrap:true,   // noWrap = render ONE world, no horizontal repeat
-  updateWhenZooming:false, keepBuffer:4,   // fewer tile swaps mid-zoom = smoother
-  attribution:'&copy; OpenStreetMap &copy; CARTO · data: airplanes.live'
+  updateWhenZooming:false, updateWhenIdle:true, keepBuffer:4,   // no tile churn mid-gesture = smoother
+  attribution:'&copy; OpenStreetMap &copy; CARTO · data: airplanes.live · routes: adsbdb + adsb.lol'
 }).addTo(map);
 
 // faint radar rings, purely decorative, centred on the frame
@@ -320,20 +303,18 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{
 // heading; past LABEL_ZOOM they pick up a callsign tag. The favourite is always
 // a highlighted silhouette. Dots live on one shared canvas (cheap); silhouettes
 // are DOM and capped, so they only cost anything when you're zoomed in close.
-const planesRenderer = L.canvas({ padding: 0.5 });
-const dots  = new Map();           // hex -> L.circleMarker  (always-on base layer)
-const icons = new Map();           // hex -> L.marker        (silhouettes, zoomed-in only)
+// all non-favourite planes are drawn on ONE canvas (PlaneLayer, below) — no per-plane
+// DOM nodes, no marker maps, no silhouette cap. Sprites are pre-rasterised per
+// (family × class × size) and stamped with drawImage, rotated to heading.
 let favMarker = null;              // her plane, always a highlighted silhouette
 let latestPlanes = [];
-let lastInteract = 0;              // when you last grabbed the map (zoom/drag)
-let centeredFav = null;            // hex we last auto-centred, so we pan only on change
-const FOLLOW_RESUME_MS = 30000;    // after you touch the map, auto-follow yields this long
-const SIL_ZOOM   = 5;              // planes are silhouettes by DEFAULT (dots only as overflow)
+const SIL_ZOOM   = 5;              // planes are silhouettes by DEFAULT (dots below this zoom)
 const LABEL_ZOOM = 8.2;            // silhouettes pick up a callsign tag at this zoom
-const MAX_SIL    = 350;            // silhouette cap; overflow at the dense edges falls back to dots
 const FAV_COLOR  = getComputedStyle(document.documentElement).getPropertyValue('--fav').trim();
 const CAT = { commercial:'#3d9bfe', private:'#ffb43b', heli:'#c678ff', mil:'#2e7d44' };
-const hidden = { commercial:false, private:false, heli:false, mil:false };   // legend toggles
+// legend toggles, persisted so a kiosk reboot keeps your picks
+const hidden = Object.assign({ commercial:false, private:false, heli:false, mil:false },
+  (()=>{ try{ return JSON.parse(localStorage.getItem('ff_hidden'))||{}; }catch(e){ return {}; } })());
 let favPos = null;                                // last known position of the favourite (centre button)
 let following = false;                            // actively follow her plane each cycle ("Her plane" button)
 const FOLLOW_ZOOM = 5;                            // zoom OUT while following so you can read the surroundings
@@ -371,15 +352,31 @@ const AIRLINES = {
   TAP:{n:'TAP',c:'#1a9a52'}, CHH:{n:'Hainan',c:'#cf102d'},
 };
 
-// short fading trails: the feed only gives the current point, so we accumulate
-// each plane's recent positions client-side (capped to TRAIL_LEN) and draw a line.
-map.createPane('trails'); map.getPane('trails').style.zIndex = 380;   // under the dots
-const trailRenderer = L.canvas({ padding:0.5, pane:'trails' });
-const history = new Map();   // hex -> [[lat,lon],...]
-const trails  = new Map();   // hex -> L.polyline
+// fading trails: the feed only gives the current point, so we accumulate each
+// plane's recent fixes client-side. The window is DISTANCE (nm), not points —
+// a 480kt jet and a 100kt Cessna paint the same trail length on the map.
+// Drawn on the trail canvas of PlaneLayer (batched strokes, head→tail alpha fade).
+const history = new Map();   // hex -> [[lat,lon,alt],...] (+_v dirty, +_cls class, +_seen ms)
 let favTrailHex = null;
-const TRAIL_LEN = 10;
-const FAV_TRAIL_LEN = 50;     // her plane keeps a 5x longer trail than everyone else
+const TRAIL_NM = 10;          // everyone's trail covers ~10nm of track
+const FAV_TRAIL_NM = 50;      // hers covers 5x that
+const TRAIL_MAX_PTS = 160;    // hard cap (hovering helis never accrue distance)
+const FAV_MAX_PTS = 800;
+const TRAIL_GRACE_MS = 90000; // keep history this long after a plane drops off the feed
+                              // (edge-of-circle blinks + brief signal gaps don't wipe trails)
+let altTrails = false;        // legend toggle: colour trails by altitude instead of class
+try{ altTrails = localStorage.getItem('ff_alttrails')==='1'; }catch(e){}
+// altitude ramp, 5000ft buckets: low = green/yellow climbs through orange/red to
+// high-cruise violet/blue. Quantised so trail strokes batch per colour.
+const ALT_COLORS = ['#2ee68b','#7ce63a','#d9e032','#f5b32a','#f07a26','#e84c52','#c44ae0','#7a5cff','#4aa3ff'];
+function altBucket(alt){ return typeof alt!=='number' ? 0 : Math.max(0, Math.min(8, Math.floor(alt/5000))); }
+function altColor(alt){ return typeof alt!=='number' ? '#9fb0c8' : ALT_COLORS[altBucket(alt)]; }
+// closed colour palette so trail segments key on a small INTEGER (no per-segment
+// string allocation in the hot redraw): 0=default 1-4=class 5=fav 6-14=altitude.
+const TRAIL_PAL = ['#9fb0c8', CAT.commercial, CAT.private, CAT.heli, CAT.mil, FAV_COLOR,
+                   ALT_COLORS[0],ALT_COLORS[1],ALT_COLORS[2],ALT_COLORS[3],ALT_COLORS[4],
+                   ALT_COLORS[5],ALT_COLORS[6],ALT_COLORS[7],ALT_COLORS[8]];
+const CLS_IDX = {commercial:1, private:2, heli:3, mil:4};
 
 // ---- airport terminals (pulsing beacons). Hubs (s:3) always show; regionals
 //      (s:2) only when zoomed in; and we only build the ones currently in frame.
@@ -408,13 +405,9 @@ const AIRPORTS = [
 {i:"YUY",n:"Rouyn-Noranda",y:48.2061,x:-78.8356,s:2},{i:"YVV",n:"Wiarton",y:44.7458,x:-81.1072,s:2},{i:"YXU",n:"London",y:43.0328,x:-81.149,s:2},{i:"YYB",n:"North Bay",y:46.3636,x:-79.4228,s:2},
 ];
 
-let inMotion = false;   // true while actively zooming/panning -> drop to fast canvas dots
-map.on('zoomstart dragstart', ()=>{ lastInteract = Date.now(); });
-// While moving (smooth-wheel zoom or drag) hide the heavy DOM silhouettes and show
-// only the cheap canvas dots, then snap silhouettes back the instant motion settles.
-// This removes the per-frame cost of repositioning hundreds of DOM markers mid-zoom.
-map.on('movestart', ()=>{ if(!inMotion){ inMotion = true; render(); } });
-map.on('zoomend moveend', ()=>{ inMotion = false; if(latestPlanes.length) render(); });
+// (the old "drop to dots while moving" machinery is gone — planes now live on one
+// canvas layer that rides the map pane during pans and CSS-scales during zooms,
+// exactly like the tile layer, so motion costs nothing. See PlaneLayer below.)
 
 // ---- home: a pulsing ping over Livonia, MI (42.36837, -83.35271) ----
 L.marker([42.36837,-83.35271], {interactive:false, keyboard:false, zIndexOffset:600,
@@ -423,27 +416,31 @@ L.marker([42.36837,-83.35271], {interactive:false, keyboard:false, zIndexOffset:
        +  `<div class="ping-core"></div><div class="ping-label">LIVONIA</div>`})}).addTo(map);
 
 // ---- favourite resolution ----
+// her plane by default; still overridable per-install via the kiosk URL (?fav=N123).
+// (The TRACK box / Spotlight button is gone per Christian Jun 11 — and with it the
+// localStorage override, which would have been stuck with no UI to change it.)
 const params = new URLSearchParams(location.search);
-let fav = (params.get('fav') || localStorage.getItem('ff_fav') || 'N527DN').toUpperCase();   // her plane (default)
-const regInput = document.getElementById('reg');
-regInput.value = fav;
-document.getElementById('cmd').addEventListener('submit',e=>{
-  e.preventDefault();
-  fav = regInput.value.trim().toUpperCase();
-  localStorage.setItem('ff_fav', fav);
-  regInput.blur();
-  razorCardActive = false;         // reclaim the card if the easter egg had it
-  cycle();                         // instant feedback
-});
+let fav = (params.get('fav') || 'N527DN').toUpperCase();
 
 // ---- legend toggles: tap an operator class to show/hide it ----
-document.querySelectorAll('#legend .tog').forEach(el=>{
+document.querySelectorAll('#legend .tog[data-cls]').forEach(el=>{
+  el.classList.toggle('off', !!hidden[el.dataset.cls]);   // restore persisted toggles
   el.addEventListener('click', ()=>{
     const c = el.dataset.cls;
     hidden[c] = !hidden[c];
     el.classList.toggle('off', hidden[c]);
+    try{ localStorage.setItem('ff_hidden', JSON.stringify(hidden)); }catch(e){}
     render();
   });
+});
+// trails colour mode: class colours (default) <-> altitude ramp; persisted
+const altTog = document.getElementById('alt-tog');
+altTog.classList.toggle('off', !altTrails);
+altTog.addEventListener('click', ()=>{
+  altTrails = !altTrails;
+  altTog.classList.toggle('off', !altTrails);
+  try{ localStorage.setItem('ff_alttrails', altTrails?'1':'0'); }catch(e){}
+  planeLayer.redrawTrails();
 });
 
 // ---- bottom-right buttons: centre her plane / centre Livonia ----
@@ -489,31 +486,44 @@ function distToRouteMi(plat,plon, olat,olon, dlat,dlon){
   else km=Math.abs(xt)*R;                                      // alongside the path
   return km*0.621371;
 }
-function routeFits(ac, r){
-  if(!(r&&r.origin&&r.destination)) return false;
-  const o=r.origin, d=r.destination;
-  if(typeof o.latitude!=='number'||typeof d.latitude!=='number'||typeof ac.lat!=='number') return true; // can't check -> allow
+// rank how strongly the aircraft's LIVE state says "yes, it's flying o->d right now":
+//   3 = on the line AND heading agrees (or nothing checkable -> legacy allow)
+//   2 = within 150mi of the dest while DESCENDING, or of the origin while CLIMBING —
+//       heading is useless mid-vector, but the vertical state says exactly which way
+//       this leg is being flown (fixes vectored arrivals that the heading gate hid)
+//   1 = within 75mi of either endpoint, any direction (taxi / turns / pattern work)
+//   0 = not plausibly flying this leg
+// Used both as the show/hide gate (rank>0) and to pick the right LEG of a multi-stop
+// route / arbitrate between disagreeing route sources (higher rank wins).
+function legRank(ac, o, d){
+  if(typeof o.latitude!=='number'||typeof d.latitude!=='number'||typeof ac.lat!=='number') return 3; // can't check -> allow
   // cross-track tolerance SCALES with route length: a 400mi regional hop must hug its line
   // (~280mi), but a 7000mi transpacific (e.g. her ATL->ICN) legitimately wanders hundreds of
-  // miles off the naive great circle on wind-optimised routing. A flat 280mi gate wrongly hid
-  // those. ~13% of route length, floored at 280, capped at 900. (her ATL->ICN: tol~900, she's
-  // ~700mi off -> shows; stale MIA->LGG: tol~560, plane 1300mi off -> still correctly hidden.)
+  // miles off the naive great circle on wind-optimised routing. ~13% of length, 280..900.
   const routeLen = haversine(o.latitude,o.longitude, d.latitude,d.longitude)*0.621371;
   const tol = Math.min(900, Math.max(280, routeLen*0.13));
-  if(distToRouteMi(ac.lat,ac.lon, o.latitude,o.longitude, d.latitude,d.longitude) > tol) return false;
-  // near either endpoint -> the plane is departing or arriving that very airport, so trust the
-  // route regardless of its instantaneous heading (it may be vectoring, turning out, or on final).
+  if(distToRouteMi(ac.lat,ac.lon, o.latitude,o.longitude, d.latitude,d.longitude) > tol) return 0;
   const dOrig = haversine(ac.lat,ac.lon, o.latitude,o.longitude)*0.621371;
   const dDest = haversine(ac.lat,ac.lon, d.latitude,d.longitude)*0.621371;
-  if(Math.min(dOrig,dDest) < 75) return true;
-  // mid-route heading sanity: a plane truly flying O->D tracks roughly toward D. Catches a stale
-  // route whose great circle merely clips the plane's position (the RPA4740 false-positive).
+  // vertical-state carve-out: strictly SIGNED climb rate so an arrival at the stale
+  // route's "origin" can't sneak through (descending != departing).
+  const vs = (typeof ac.baro_rate==='number') ? ac.baro_rate : null;
+  if(vs!=null && vs < -200 && dDest < 150) return 2;
+  if(vs!=null && vs >  200 && dOrig < 150) return 2;
+  if(Math.min(dOrig,dDest) < 75) return 1;
+  // mid-route heading sanity: a plane truly flying O->D tracks roughly toward D. Catches a
+  // stale route whose great circle merely clips the plane's position (RPA4740 class), and
+  // return-legs flying the line backwards (DAL2699 class: on the JFK-PDX line, 170 deg off).
   if(typeof ac.track==='number'){
     const brg = (_bearing(ac.lat,ac.lon, d.latitude,d.longitude)*180/Math.PI + 360) % 360;
     const diff = Math.abs(((ac.track - brg + 540) % 360) - 180);   // 0..180 deg off
-    if(diff > 90) return false;
+    if(diff > 90) return 0;
   }
-  return true;
+  return 3;
+}
+function routeFits(ac, r){
+  if(!(r&&r.origin&&r.destination)) return false;
+  return legRank(ac, r.origin, r.destination) > 0;
 }
 
 // ---- dead-reckoning: estimate her position while she's off-signal ----
@@ -654,15 +664,12 @@ function airline(ac){
   const m = (ac.flight||'').trim().toUpperCase().match(/^[A-Z]{3}/);
   return m ? AIRLINES[m[0]] : null;
 }
-// body colour is the OPERATOR class only — every commercial plane stays the same
-// blue; the specific airline is shown as an accent (a coloured tail / dot-ring).
-function planeColor(ac){ return CAT[planeClass(ac)] || CAT.private; }
-// the airline's brand colour, used as an accent only (null if unknown / non-commercial)
-function airlineAccent(ac){
-  if(planeClass(ac)!=='commercial') return null;
-  const al = airline(ac);
-  return al ? al.c : null;
-}
+// family() and planeClass() are regex-heavy and get asked about the same aircraft
+// several times per paint — memoise on the aircraft object (it's rebuilt each fetch,
+// so the cache naturally lives exactly one data cycle).
+const classOf = ac => ac._cls || (ac._cls = planeClass(ac));
+const famOf   = ac => ac._fam || (ac._fam = family(ac));
+function planeColor(ac){ return CAT[classOf(ac)] || CAT.private; }
 
 function silSize(fam, z){
   const base = SIL_BASE[fam]||27;
@@ -675,17 +682,12 @@ function silSVG(ac, fam, size, color){
        + ` style="transform:rotate(${ac.track||0}deg)"><g fill="${color}">`
        + `${SIL[fam]||SIL.generic}</g></svg>`;
 }
-function silIcon(ac, fam, col, size, withLabel){
-  const tag = withLabel ? `<div class="tag">${((ac.flight||'').trim()||ac.r||'')}</div>` : '';
-  return L.divIcon({className:'plane', iconSize:[size,size], iconAnchor:[size/2,size/2],
-    html:`<div class="sil" style="color:${col}">${silSVG(ac,fam,size,'currentColor')}${tag}</div>`});
-}
 // the favourite: its real silhouette, in the spotlight colour, with ring + label.
 // est=true => dead-reckoned ghost: dimmed, grey "EST ·" label, no pulsing ring.
 function favIcon(ac, est){
-  const fam = family(ac), size = Math.max(36, silSize(fam, map.getZoom())+8);
+  const fam = famOf(ac), size = Math.max(36, silSize(fam, map.getZoom())+8);
   const ring = est ? '' : '<div class="fav-ring"></div>';
-  const label = (est?'EST · ':'') + (ac.r||fav);
+  const label = (est?'EST · ':'') + esc(ac.r||fav);
   return L.divIcon({className: est?'plane fav fav-est':'plane fav', iconSize:[size,size], iconAnchor:[size/2,size/2],
     html:`<div class="fav-wrap">${silSVG(ac,fam,size,FAV_COLOR)}${ring}<div class="fav-label">${label}</div></div>`});
 }
@@ -697,13 +699,316 @@ function isFav(ac){
   return (ac.r||'').toUpperCase()===fav || (ac.hex||'').toUpperCase()===fav;
 }
 
-function fmt(n,suff=''){return (n==null||n==='')?'—':(n+suff);}
+// ============================================================================
+//  PlaneLayer — ALL non-favourite planes on one canvas.
+//  Why: DOM markers cost per-element layout/composite work that scales with the
+//  plane count and made zoom/pan stutter (the old fix swapped silhouettes for
+//  dots mid-motion). A single canvas rides the map pane during pans for free,
+//  CSS-scales during zooms (same trick as the tile layer / Leaflet's own
+//  L.Canvas), and redraws crisp at rest. No silhouette cap, no dot fallback,
+//  no swap — silhouettes simply stay put.
+//  Silhouettes are pre-rasterised ONCE per (family × class × size tier) from the
+//  same SIL svg strings, then stamped with drawImage rotated to heading.
+// ============================================================================
+const PAD = 0.25;                  // extra canvas margin so small pans don't show blank edges
+const RAD = Math.PI/180;
+const _sprites = new Map();        // 'fam|class|tier' -> {img,size,ready}
+function sprite(fam, cls, big){
+  const key = fam+'|'+cls+'|'+(big?1:0);
+  let s = _sprites.get(key);
+  if(s) return s.ready ? s : null;                 // null while the raster loads -> dot fallback
+  const size = Math.round((SIL_BASE[fam]||27) * (big?1.12:0.82));
+  const img = new Image();
+  s = {img, size, ready:false}; _sprites.set(key, s);
+  // 2x raster so rotated draws stay crisp; viewBox padding keeps the shadow unclipped
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size*2}" height="${size*2}" viewBox="-6 -6 112 112">`
+    + `<g fill="${CAT[cls]||CAT.private}" style="filter:drop-shadow(0 0 1.5px rgba(0,0,0,.65))">${SIL[fam]||SIL.generic}</g></svg>`;
+  img.onload = ()=>{ s.ready = true; planeLayer.redrawPlanes(); };
+  img.src = 'data:image/svg+xml;charset=utf-8,'+encodeURIComponent(svg);
+  return null;
+}
+// ---- glide animation state: planes tween between consecutive fixes ----
+// On each data cycle the tween restarts: from = wherever the plane is DISPLAYED right
+// now (mid-tween safe), to = the new fix; k runs 0->1 over REFRESH_MS. One poll of
+// latency, perfectly smooth, no overshoot (the FR24 approach).
+const anim = new Map();           // hex -> {fLat,fLon,fTrk, tLat,tLon,tTrk, t0}
+function lerpAngle(a,b,k){ const d=((b-a+540)%360)-180; return (a+d*k+360)%360; }
+function commitAnim(hex, lat, lon, trk, now){
+  // a fix can arrive with NO track (just-acquired / on-ground / heli). Coerce to a
+  // number on FIRST sight — an undefined here would feed lerpAngle and poison fTrk
+  // to NaN forever (canvas rotate(NaN) => the sprite silently stops drawing).
+  const t = (typeof trk==='number') ? trk : 0;
+  let st = anim.get(hex);
+  if(!st){ anim.set(hex, {fLat:lat,fLon:lon,fTrk:t, tLat:lat,tLon:lon,tTrk:t, t0:now-REFRESH_MS}); return; }
+  const k = Math.min(1, (now-st.t0)/REFRESH_MS);
+  st.fLat = st.fLat+(st.tLat-st.fLat)*k;
+  st.fLon = st.fLon+(st.tLon-st.fLon)*k;
+  st.fTrk = lerpAngle(st.fTrk, st.tTrk, k);
+  st.tLat = lat; st.tLon = lon;
+  st.tTrk = (typeof trk==='number') ? trk : st.tTrk;
+  st.t0 = now;
+}
+function animPos(hex, now){
+  const st = anim.get(hex); if(!st) return null;
+  const k = Math.min(1, (now-st.t0)/REFRESH_MS);
+  return [st.fLat+(st.tLat-st.fLat)*k, st.fLon+(st.tLon-st.fLon)*k, lerpAngle(st.fTrk,st.tTrk,k)];
+}
+
+const PlaneLayer = L.Layer.extend({
+  initialize(opts){ L.setOptions(this, opts); },
+  onAdd(){
+    // TWO canvases: trails redraw only when data commits (every 4s) or the view
+    // settles; planes redraw every animation frame (the glide). Both carry
+    // leaflet-zoom-animated — LOAD-BEARING: transform-origin:0 0 so the mid-zoom
+    // CSS scale pivots on the corner (without it planes slide off while wheeling).
+    this._trailC = L.DomUtil.create('canvas', 'leaflet-zoom-animated');
+    this._planeC = L.DomUtil.create('canvas', 'leaflet-zoom-animated');
+    this._tctx = this._trailC.getContext('2d');
+    this._pctx = this._planeC.getContext('2d');
+    for(const c of [this._trailC, this._planeC]){
+      c.style.position = 'absolute';
+      this.getPane().appendChild(c);
+    }
+    this._update();
+  },
+  onRemove(){ L.DomUtil.remove(this._trailC); L.DomUtil.remove(this._planeC); },
+  getEvents(){
+    return { viewreset:this._update, moveend:this._update, resize:this._update,
+             zoom:this._onZoom, zoomanim:this._onAnimZoom, zoomend:this._onZoomEnd };
+  },
+  // while a zoom is in flight the canvases are CSS-scaled (cheap, GPU) and the
+  // per-frame glide redraw is SUSPENDED (this._zooming) — redrawing against a map
+  // whose zoom disagrees with the canvas transform would double-transform and fling
+  // planes off position. _update() repaints crisp the moment the zoom settles.
+  _onZoom(){ this._zooming = true; this._applyT(this._map.getCenter(), this._map.getZoom()); },
+  _onAnimZoom(e){ this._zooming = true; this._applyT(e.center, e.zoom); },
+  _onZoomEnd(){ this._zooming = false; },
+  _applyT(center, zoom){
+    const m = this._map,
+      scale = m.getZoomScale(zoom, this._zoom),
+      viewHalf = m.getSize().multiplyBy(0.5 + PAD),
+      currentCenterPoint = m.project(this._center, zoom),
+      topLeftOffset = viewHalf.multiplyBy(-scale).add(currentCenterPoint)
+        .subtract(m._getNewPixelOrigin(center, zoom));
+    L.DomUtil.setTransform(this._trailC, topLeftOffset, scale);
+    L.DomUtil.setTransform(this._planeC, topLeftOffset, scale);
+  },
+  _update(){
+    const m = this._map;
+    if(m._animatingZoom) return;
+    this._zooming = false;
+    const size = m.getSize(), min = m.containerPointToLayerPoint(size.multiplyBy(-PAD)).round();
+    const prevMin = this._bounds && this._bounds.min, prevZoom = this._zoom;
+    this._bounds = new L.Bounds(min, min.add(size.multiplyBy(1 + PAD*2)).round());
+    this._center = m.getCenter(); this._zoom = m.getZoom();
+    const bs = this._bounds.getSize();
+    const dpr = this._dpr = Math.min(window.devicePixelRatio||1, 2);
+    let sizeChanged = false;
+    for(const c of [this._trailC, this._planeC]){
+      if(c.width !== bs.x*dpr || c.height !== bs.y*dpr){
+        c.width = bs.x*dpr; c.height = bs.y*dpr;
+        c.style.width = bs.x+'px'; c.style.height = bs.y+'px';
+        sizeChanged = true;
+      }
+      L.DomUtil.setPosition(c, this._bounds.min);
+    }
+    // skip the (expensive) full repaint when this _update is a sub-pixel follow-nudge:
+    // same zoom, same canvas size, origin moved <1px. The map.setView() that "follow
+    // her plane" fires every 4s lands here right after render() already drew the new
+    // data — without this it doubled the trail+plane repaint on every poll while following.
+    if(!sizeChanged && prevZoom===this._zoom && prevMin &&
+       Math.abs(prevMin.x-this._bounds.min.x)<1 && Math.abs(prevMin.y-this._bounds.min.y)<1) return;
+    this.redrawTrails();
+    this.redrawPlanes();
+  },
+  // hoisted Web-Mercator projection: canvas-local pixel of a lat/lon with the pixel
+  // origin folded in once. Equals Leaflet's latLngToLayerPoint()-b.min to <1px
+  // (verified in-page), but allocates nothing — the old per-point latLngToLayerPoint
+  // churned ~25-50k LatLng/Point objects per trail repaint (a Pi hitch every 4s).
+  _proj(){
+    const m = this._map, b = this._bounds, po = m.getPixelOrigin();
+    return { scale: 256*Math.pow(2, m.getZoom()), ox: po.x + b.min.x, oy: po.y + b.min.y };
+  },
+  // ---- trails: head→tail alpha fade, batched into one multi-subpath stroke per
+  //      (colour × fade-tier × width) bucket — ~20 strokes for the whole frame ----
+  redrawTrails(){
+    const m = this._map, b = this._bounds; if(!b || !m || this._zooming) return;
+    const ctx = this._tctx, dpr = this._dpr||1, bs = b.getSize();
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    ctx.clearRect(0,0,bs.x,bs.y);
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    const pc = this._proj(), sc = pc.scale, ox = pc.ox, oy = pc.oy, R4PI = 4*Math.PI;
+    const px = lon => sc*(lon/360 + 0.5) - ox;
+    const py = lat => { const s=Math.sin(lat*RAD); return sc*(0.5 - Math.log((1+s)/(1-s))/R4PI) - oy; };
+    const buckets = [];              // sparse, indexed by small integer key
+    const FADE = [.08,.16,.26,.38], FADE_FAV = [.18,.34,.52,.72], S = 300;
+    for(const [hex,h] of history){
+      if(h.length < 2) continue;
+      const isF = hex===favTrailHex;
+      if(!isF && h._cls && hidden[h._cls]) continue;
+      // viewport reject on head AND tail: a long trail (esp. her 50nm) can straddle
+      // the view with its head panned off — culling on the head alone made the
+      // still-visible body disappear at high zoom.
+      const hx = px(h[h.length-1][1]), hy = py(h[h.length-1][0]);
+      const tx = px(h[0][1]),          ty = py(h[0][0]);
+      if((hx<-S&&tx<-S)||(hx>bs.x+S&&tx>bs.x+S)||(hy<-S&&ty<-S)||(hy>bs.y+S&&ty>bs.y+S)) continue;
+      const w = isF ? 4.5 : 1.4, fade = isF ? FADE_FAV : FADE, n = h.length-1;
+      const baseIdx = isF ? 5 : (CLS_IDX[h._cls]||0), favBit = isF?1:0;
+      let prevx = px(h[0][1]), prevy = py(h[0][0]);
+      for(let i=1; i<h.length; i++){
+        const cx = px(h[i][1]), cy = py(h[i][0]);
+        const tier = i/n < .25 ? 0 : i/n < .5 ? 1 : i/n < .75 ? 2 : 3;
+        const colorIdx = altTrails ? (6 + altBucket(h[i][2])) : baseIdx;
+        const key = colorIdx*8 + tier*2 + favBit;
+        let bk = buckets[key];
+        if(!bk){ bk = buckets[key] = {col:TRAIL_PAL[colorIdx], alpha:fade[tier], w, segs:[]}; }
+        bk.segs.push(prevx, prevy, cx, cy);
+        prevx = cx; prevy = cy;
+      }
+    }
+    for(const bk of buckets){
+      if(!bk) continue;
+      ctx.strokeStyle = bk.col; ctx.globalAlpha = bk.alpha; ctx.lineWidth = bk.w;
+      ctx.beginPath();
+      const s = bk.segs;
+      for(let i=0; i<s.length; i+=4){ ctx.moveTo(s[i],s[i+1]); ctx.lineTo(s[i+2],s[i+3]); }
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  },
+  // ---- planes: sprites at their INTERPOLATED positions; runs every anim frame ----
+  redrawPlanes(){
+    const m = this._map, b = this._bounds; if(!b || !m || this._zooming) return;
+    const ctx = this._pctx, dpr = this._dpr||1, bs = b.getSize();
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    ctx.clearRect(0,0,bs.x,bs.y);
+    const z = m.getZoom(), withLabel = z>=LABEL_ZOOM, useSil = z>=SIL_ZOOM, big = z>=8;
+    const connect = z >= 7.5;        // head connector only when the 4s gap is visible (px scale)
+    const now = performance.now();
+    const labels = withLabel ? [] : null;
+    const pc = this._proj(), sc = pc.scale, ox = pc.ox, oy = pc.oy, R4PI = 4*Math.PI;
+    const px = lon => sc*(lon/360 + 0.5) - ox;
+    const py = lat => { const s=Math.sin(lat*RAD); return sc*(0.5 - Math.log((1+s)/(1-s))/R4PI) - oy; };
+    ctx.lineCap = 'round';
+    for(const ac of latestPlanes){
+      if(!ac.hex || typeof ac.lat!=='number') continue;
+      if(isFav(ac) || hidden[classOf(ac)]) continue;
+      const ap = animPos(ac.hex, now);
+      const lat = ap?ap[0]:ac.lat, lon = ap?ap[1]:ac.lon, trk = ap?ap[2]:(ac.track||0);
+      const x = px(lon), y = py(lat);
+      if(x<-24 || y<-24 || x>bs.x+24 || y>bs.y+24) continue;
+      // live head segment: last committed trail point -> gliding position, so the
+      // trail stays attached to the plane between fixes (only matters zoomed in)
+      if(connect){
+        const h = history.get(ac.hex);
+        if(h && h.length){
+          const lx = px(h[h.length-1][1]), ly = py(h[h.length-1][0]);
+          if(Math.abs(lx-x)>2 || Math.abs(ly-y)>2){
+            ctx.strokeStyle = altTrails ? altColor(h[h.length-1][2]) : planeColor(ac);
+            ctx.globalAlpha = .4; ctx.lineWidth = 1.4;
+            ctx.beginPath(); ctx.moveTo(lx,ly); ctx.lineTo(x,y); ctx.stroke();
+            ctx.globalAlpha = 1;
+          }
+        }
+      }
+      let drawn = false;
+      if(useSil){
+        const s = sprite(famOf(ac), classOf(ac), big);
+        if(s){
+          const half = s.size/2;
+          ctx.save(); ctx.translate(x,y); ctx.rotate(trk*RAD);
+          ctx.drawImage(s.img, -half, -half, s.size, s.size); ctx.restore();
+          if(labels) labels.push([((ac.flight||'').trim()||ac.r||''), x, y+half+8]);
+          drawn = true;
+        }
+      }
+      if(!drawn){ ctx.fillStyle = planeColor(ac); ctx.beginPath(); ctx.arc(x,y,4,0,6.2832); ctx.fill(); }
+    }
+    // favourite head connector: her marker is a DOM element that glides ahead of her
+    // canvas trail (which ends at the last committed fix). Bridge the gap so the
+    // orange trail stays visually attached to her marker between fixes.
+    if(connect && favTrailHex && favAnim && !favIsEst){
+      const h = history.get(favTrailHex);
+      if(h && h.length){
+        const k = Math.min(1, (now-favAnim.t0)/REFRESH_MS);
+        const gx = px(favAnim.fLon+(favAnim.tLon-favAnim.fLon)*k);
+        const gy = py(favAnim.fLat+(favAnim.tLat-favAnim.fLat)*k);
+        const lx = px(h[h.length-1][1]), ly = py(h[h.length-1][0]);
+        if(Math.abs(lx-gx)>2 || Math.abs(ly-gy)>2){
+          ctx.strokeStyle = altTrails ? altColor(h[h.length-1][2]) : FAV_COLOR;
+          ctx.globalAlpha = .65; ctx.lineWidth = 4.5;
+          ctx.beginPath(); ctx.moveTo(lx,ly); ctx.lineTo(gx,gy); ctx.stroke();
+          ctx.globalAlpha = 1;
+        }
+      }
+    }
+    if(labels && labels.length){      // labels in one pass so font/style is set once
+      ctx.font = '600 9px ui-monospace,Menlo,monospace';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.75)'; ctx.fillStyle = '#e9eef6';
+      for(const [t,x,y] of labels){ if(t){ ctx.strokeText(t,x,y); ctx.fillText(t,x,y); } }
+    }
+  }
+});
+map.createPane('planes').style.zIndex = 450;   // above rings(400), below DOM markers(600)
+const planeLayer = new PlaneLayer({pane:'planes'});
+map.addLayer(planeLayer);
+
+// ---- the glide loop: ~30fps cap (Pi-friendly), suspended while zooming.
+// rAF stops automatically in hidden tabs, so this costs nothing in the background.
+const FRAME_MS = 33;
+let lastFrame = 0;
+function glideFrame(now){
+  requestAnimationFrame(glideFrame);
+  if(now - lastFrame < FRAME_MS) return;
+  lastFrame = now;
+  planeLayer.redrawPlanes();
+  // the favourite is a DOM marker — glide it too. Suspend during a zoom: Leaflet
+  // CSS-animates marker positions through the zoom, and an explicit setLatLng each
+  // frame would fight that and make her hop. (redrawPlanes self-suspends already.)
+  if(favMarker && favAnim && !planeLayer._zooming){
+    const k = Math.min(1, (performance.now()-favAnim.t0)/REFRESH_MS);
+    // antimeridian guard: if the two fixes straddle ±180 lon, a linear lerp would
+    // sweep her the long way across the whole map. Snap to the target instead.
+    const lon = Math.abs(favAnim.tLon-favAnim.fLon) > 180
+      ? favAnim.tLon
+      : favAnim.fLon+(favAnim.tLon-favAnim.fLon)*k;
+    favMarker.setLatLng([favAnim.fLat+(favAnim.tLat-favAnim.fLat)*k, lon]);
+    const svg = favMarker.getElement() && favMarker.getElement().querySelector('svg');
+    if(svg) svg.style.transform = `rotate(${lerpAngle(favAnim.fTrk, favAnim.tTrk, k)}deg)`;
+  }
+}
+requestAnimationFrame(glideFrame);
+
+// canvas planes aren't individually clickable, so hit-test on map click: nearest
+// plane within ~19px opens the same detail popup the DOM markers used to.
+map.on('click', e=>{
+  let best = null, bestLL = null, bd = 19*19;
+  const cp = e.containerPoint, now = performance.now();
+  for(const ac of latestPlanes){
+    if(!ac.hex || typeof ac.lat!=='number') continue;
+    if(isFav(ac) || hidden[classOf(ac)]) continue;
+    // hit-test against where the plane is DRAWN (glided), not its raw fix — at high
+    // zoom the two are tens of px apart, so clicking the visible sprite would miss.
+    const ap = animPos(ac.hex, now);
+    const lat = ap?ap[0]:ac.lat, lon = ap?ap[1]:ac.lon;
+    const p = map.latLngToContainerPoint([lat,lon]);
+    const d = (p.x-cp.x)*(p.x-cp.x) + (p.y-cp.y)*(p.y-cp.y);
+    if(d < bd){ bd = d; best = ac; bestLL = L.latLng(lat,lon); }
+  }
+  if(best) openDetail(best, bestLL);
+});
+
+// API strings (owners, municipalities, callsigns) go straight into innerHTML — escape
+// them. Free aviation DBs do carry stray &/< in owner names; cheap insurance.
+const esc = s => String(s??'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function fmt(n,suff=''){return (n==null||n==='')?'—':(esc(n)+suff);}
 
 // helper: origin->destination row from stored fields (already geo-validated when saved)
 function routeODfromStored(st){
   if(typeof st.dLat!=='number') return '';
-  return `<div class="route-od"><b>${st.oI||'?'}</b> <span class="cty">${st.oM||''}</span>`
-    + `<span class="arr">→</span><b>${st.dI||'?'}</b> <span class="cty">${st.dM||''}</span></div>`;
+  return `<div class="route-od"><b>${esc(st.oI||'?')}</b> <span class="cty">${esc(st.oM||'')}</span>`
+    + `<span class="arr">→</span><b>${esc(st.dI||'?')}</b> <span class="cty">${esc(st.dM||'')}</span></div>`;
 }
 
 function renderCard(state, data, route, est){
@@ -712,7 +1017,7 @@ function renderCard(state, data, route, est){
 
   // ===== OFFLINE / ESTIMATED states (data = stored last-known state) =====
   if(state==='enroute'||state==='lastknown'||state==='arrived'||state==='none'){
-    const st = data, reg = (st&&st.reg) || fav;
+    const st = data, reg = esc((st&&st.reg) || fav);
     if(state==='none' || !st){
       $card.innerHTML = `
         <div class="reg">${reg}</div>
@@ -779,11 +1084,11 @@ function renderCard(state, data, route, est){
   let routeOD='';
   if(route && route.origin && route.destination && routeFits(ac, route)){
     const o=route.origin, d=route.destination;
-    routeOD = `<div class="route-od"><b>${o.iata_code||o.icao_code||'?'}</b> <span class="cty">${o.municipality||''}</span>`
-      + `<span class="arr">→</span><b>${d.iata_code||d.icao_code||'?'}</b> <span class="cty">${d.municipality||''}</span></div>`;
+    routeOD = `<div class="route-od"><b>${esc(o.iata_code||o.icao_code||'?')}</b> <span class="cty">${esc(o.municipality||'')}</span>`
+      + `<span class="arr">→</span><b>${esc(d.iata_code||d.icao_code||'?')}</b> <span class="cty">${esc(d.municipality||'')}</span></div>`;
   }
   $card.innerHTML = `
-    <div class="reg">${ac.r||fav}</div>
+    <div class="reg">${esc(ac.r||fav)}</div>
     <span class="badge ${badge[0]}">${badge[1]}</span>
     ${routeOD}
     <dl>
@@ -797,24 +1102,42 @@ function renderCard(state, data, route, est){
   $card.classList.add('show');
 }
 
-// her plane's route, cached per callsign so we don't re-hit adsbdb every 6s cycle
-let favRoute = null, favRouteCS = null;
-async function getFavRoute(cs){
+// her plane's route, cached per callsign so we don't re-hit adsbdb every 6s cycle.
+// A FAILED lookup is retried after 10 min instead of being cached forever — a one-off
+// network blip used to blank the route on her card for the entire flight.
+let favRoute = null, favRouteCS = null, favRouteTs = 0;
+async function getFavRoute(ac){
+  const cs = (ac.flight||'').trim();
   if(!cs) return null;
-  if(cs===favRouteCS) return favRoute;
+  if(cs===favRouteCS && (favRoute || Date.now()-favRouteTs < 600000)) return favRoute;
   favRouteCS = cs;
-  favRoute = await getRoute(cs);
+  favRoute = await resolveRoute(ac);    // both sources, geo-validated, leg-picked
+  favRouteTs = Date.now();
   return favRoute;
 }
 
 // ---- the main loop: fetch, then render() paints what we got ----
+let cycling = false;     // re-entry guard: a slow fetch must not stack cycles
+let favMisses = 0;       // consecutive polls without a live fix on the favourite
+// pause polling in BACKGROUNDED tabs (no point burning API quota you can't see) —
+// but only ones that were actually visible once, so headless/preview contexts that
+// report permanently-hidden still poll normally.
+let wasVisible = !document.hidden;
+document.addEventListener('visibilitychange', ()=>{ if(!document.hidden){ wasVisible = true; cycle(); } });
 async function cycle(){
+  if(cycling || (document.hidden && wasVisible)) return;
+  cycling = true;
+  try{ await _cycle(); } finally { cycling = false; }
+}
+async function _cycle(){
   try{
     const j = await getPlanes();
     latestPlanes = (j.ac||j.aircraft||[])
       .filter(a=>typeof a.lat==='number' && !String(a.category||'').startsWith('C')); // drop ground vehicles
   }catch(e){ /* keep last frame on a hiccup */ }
   const favInFrame = render();
+  // persist trails (throttled) so reloads/reboots come back with history intact
+  if(Date.now() - lastTrailSave > TRAIL_SAVE_MS){ lastTrailSave = Date.now(); saveTrails(); }
 
   // ---- the favourite: keep it spotlighted on the map WHEREVER it is ----
   // If it's outside the Michigan frame, ask the dedicated reg endpoint for its real
@@ -827,13 +1150,14 @@ async function cycle(){
 
   if(hasPos){
     // ---- LIVE: real marker, save state for offline estimation, live card ----
+    favMisses = 0;
     pushHistory(fd); favPos = [fd.lat, fd.lon];
     updateFavourite(fd, false);
     // following? keep her centred. setView(animate:false) = imperceptible few-px nudge each
     // cycle; a user drag/wheel sets following=false so it stops the instant you grab the map.
     if(following && favPos){ map.setView(favPos, map.getZoom(), {animate:false}); }
     let favRt = null;
-    const fcs=(fd.flight||'').trim(); if(fcs) favRt = await getFavRoute(fcs);
+    if((fd.flight||'').trim()) favRt = await getFavRoute(fd);
     saveFavState(fd, favRt);                       // persist last-known good state + validated route
     if(!fav) renderCard('off');
     else if(favInFrame) renderCard('frame', fd, favRt);
@@ -843,6 +1167,11 @@ async function cycle(){
 
   // ---- OFFLINE: no live signal -> dead-reckon from stored last-contact state ----
   if(!fav){ updateFavourite(null); renderCard('off'); return; }
+  // one missed poll is almost always an API blip, not her going dark — keep the live
+  // marker for a couple of cycles before flapping to the estimate ghost. (If we're
+  // ALREADY estimating, keep estimating — the ghost should advance every cycle.)
+  favMisses++;
+  if(favMisses < 3 && favMarker && !favIsEst) return;
   const stored = loadFavState();
   const est = stored ? estimateFav(stored) : null;
   if(est && (est.tier==='enroute' || est.tier==='lastknown')){
@@ -862,147 +1191,143 @@ async function cycle(){
   }
 }
 
-// keep a short rolling position history per plane (for trails)
+// keep a rolling DISTANCE-windowed position history per plane (for trails)
+const NM_PER_KM = 0.539957;
 function pushHistory(ac){
   let h = history.get(ac.hex);
-  if(!h){ h = []; history.set(ac.hex, h); }
+  if(!h){ h = []; h._v = 0; history.set(ac.hex, h); }
+  h._seen = Date.now();
+  h._cls = isFav(ac) ? h._cls : classOf(ac);    // trail colour source (class mode)
   const last = h[h.length-1];
   if(!last || Math.abs(last[0]-ac.lat)>1e-4 || Math.abs(last[1]-ac.lon)>1e-4){
-    h.push([ac.lat, ac.lon]);
-    const cap = isFav(ac) ? FAV_TRAIL_LEN : TRAIL_LEN;   // her plane keeps a much longer history
-    while(h.length > cap) h.shift();
+    const alt = ac.alt_baro==='ground' ? 0 : (typeof ac.alt_baro==='number' ? ac.alt_baro : null);
+    h.push([ac.lat, ac.lon, alt]); h._v++;
+    // window by track DISTANCE, newest backwards; drop everything past the cap
+    const capNm = isFav(ac) ? FAV_TRAIL_NM : TRAIL_NM;
+    let total = 0;
+    for(let i=h.length-1; i>0; i--){
+      total += haversine(h[i][0],h[i][1], h[i-1][0],h[i-1][1]) * NM_PER_KM;
+      if(total > capNm){ h.splice(0, i); break; }
+    }
+    const maxPts = isFav(ac) ? FAV_MAX_PTS : TRAIL_MAX_PTS;
+    while(h.length > maxPts) h.shift();
   }
 }
-function updateTrail(hex, col, weight, opacity){
-  const h = history.get(hex);
-  if(!h || h.length < 2){ return; }
-  let t = trails.get(hex);
-  if(!t){
-    t = L.polyline(h.slice(),{renderer:trailRenderer, color:col, weight:weight,
-          opacity:opacity, interactive:false}).addTo(map);
-    trails.set(hex, t);
-  }else{
-    t.setLatLngs(h.slice());
-    if(t._c!==col){ t.setStyle({color:col}); }
-  }
-  t._c = col;
-}
 
-// ---- paint: every in-view plane is a SILHOUETTE (capped for perf); the overflow
-//      at the dense edges falls back to fast dots. Each plane is one OR the other. ----
-function cullTrail(hex){ const t=trails.get(hex); if(t){ map.removeLayer(t); trails.delete(hex); } history.delete(hex); }
-
-function upsertDot(ac, col){
-  let d = dots.get(ac.hex);
-  if(!d){
-    d = L.circleMarker([ac.lat,ac.lon],{renderer:planesRenderer, radius:4,
-          weight:0, fillColor:col, fillOpacity:.92, bubblingMouseEvents:false}).addTo(map);
-    d.on('click', onPlaneClick); dots.set(ac.hex, d);
-  }else if(d._c!==col){
-    d.setLatLng([ac.lat,ac.lon]); d.setStyle({fillColor:col});
-  }else d.setLatLng([ac.lat,ac.lon]);
-  d._c = col; d._ac = ac;
+// ---- trail persistence: trails survive reloads/reboots (localStorage, throttled) ----
+const TRAIL_STORE = 'ff_trail_hist', TRAIL_SAVE_MS = 30000;
+let lastTrailSave = 0;
+function saveTrails(){
+  try{
+    const o = {};
+    for(const [hex,h] of history){
+      if(h.length < 2) continue;
+      o[hex] = [h._cls||'private', h._seen||0,
+                h.map(p=>[+p[0].toFixed(4), +p[1].toFixed(4), p[2]==null?null:Math.round(p[2])])];
+    }
+    localStorage.setItem(TRAIL_STORE, JSON.stringify(o));
+  }catch(e){}
 }
-function upsertSil(ac, z, withLabel){
-  const fam = family(ac), col = planeColor(ac), size = silSize(fam, z);
-  const key = fam + col + size + (withLabel?'L':'');
-  let m = icons.get(ac.hex);
-  if(!m){
-    m = L.marker([ac.lat,ac.lon],{icon:silIcon(ac,fam,col,size,withLabel),keyboard:false}).addTo(map);
-    m.on('click', onPlaneClick); m._key = key; icons.set(ac.hex, m);
-  }else if(m._key !== key){
-    m.setIcon(silIcon(ac,fam,col,size,withLabel)); m._key = key; m.setLatLng([ac.lat,ac.lon]);
-  }else{
-    m.setLatLng([ac.lat,ac.lon]);
-    const svg = m.getElement()?.querySelector('svg');
-    if(svg) svg.style.transform = `rotate(${ac.track||0}deg)`;
-  }
-  m._ac = ac;
+function loadTrails(){
+  try{
+    const o = JSON.parse(localStorage.getItem(TRAIL_STORE)); if(!o) return;
+    const now = Date.now(), cutoff = now - 10*60*1000;   // ignore anything >10 min old
+    for(const [hex, entry] of Object.entries(o)){
+      const [cls, seen, pts] = entry;
+      if(!seen || seen < cutoff || !pts || pts.length<2) continue;
+      // RESTART the grace window on restore (_seen=now): the 10-min staleness filter
+      // already ran against the STORED value above. Without this the very first
+      // render()'s 90s grace-cull deletes every just-restored trail whose plane isn't
+      // in the first poll — silently truncating the 10-min persistence to 90s, and
+      // ALWAYS killing her restored trail (favTrailHex is still null at that point).
+      const h = pts.slice(); h._v = 1; h._cls = cls; h._seen = now;
+      history.set(hex, h);
+    }
+    // seed favTrailHex from the persisted fav state so her restored trail draws
+    // orange/wide from frame 1, before her first live fix re-establishes it.
+    try{ const fs = JSON.parse(localStorage.getItem(FAV_STORE_KEY)); if(fs && fs.hex && history.has(fs.hex)) favTrailHex = fs.hex; }catch(e){}
+  }catch(e){}
 }
+loadTrails();
+window.addEventListener('pagehide', saveTrails);
 
+// ---- paint: planes go to the canvas layer; this keeps trails/airports/count in step ----
 function render(){
   const planes = latestPlanes;
-  const z = map.getZoom(), withLabel = z >= LABEL_ZOOM, useSil = !inMotion && z >= SIL_ZOOM;
-  const bounds = map.getBounds();
   const seen = new Set();
   let favInFrame = null;
-  const inView = [];
-
-  // pass 1: history, favourite, and gather the in-view silhouette candidates
+  const now = performance.now();
   for(const ac of planes){
     if(!ac.hex || typeof ac.lat!=='number') continue;
-    if(hidden[planeClass(ac)] && !isFav(ac)) continue;   // operator class toggled off in the legend
-    pushHistory(ac);
     if(isFav(ac)){ favInFrame = ac; continue; }
     seen.add(ac.hex);
-    if(useSil && bounds.contains([ac.lat,ac.lon])) inView.push(ac);
+    // history grows even for legend-hidden classes (cheap) so toggling a class
+    // back on shows its trails instantly instead of regrowing from zero
+    pushHistory(ac);
+    commitAnim(ac.hex, ac.lat, ac.lon, ac.track, now);
   }
-  // pick the silhouette set — nearest to centre, capped; the rest fall back to dots
-  const silSet = new Set();
-  if(useSil){
-    let pool = inView;
-    if(pool.length > MAX_SIL){
-      const c = map.getCenter();
-      pool = pool.slice().sort((a,b)=>
-        Math.hypot(a.lat-c.lat,a.lon-c.lng) - Math.hypot(b.lat-c.lat,b.lon-c.lng)).slice(0, MAX_SIL);
+  // cull trails/history only after the GRACE window — edge-of-circle blinks and
+  // brief signal gaps no longer wipe a plane's trail
+  const cutoff = Date.now() - TRAIL_GRACE_MS;
+  for(const [hex,h] of history){
+    if(!seen.has(hex) && hex!==favTrailHex && (h._seen||0) < cutoff){
+      history.delete(hex); anim.delete(hex);
     }
-    for(const a of pool) silSet.add(a.hex);
   }
-  // pass 2: each plane is a silhouette XOR a dot (never both)
-  for(const ac of planes){
-    if(!ac.hex || typeof ac.lat!=='number' || isFav(ac)) continue;
-    if(hidden[planeClass(ac)]) continue;                 // toggled off -> cull loop removes it
-    const col = planeColor(ac);
-    if(silSet.has(ac.hex)){
-      if(dots.has(ac.hex)){ map.removeLayer(dots.get(ac.hex)); dots.delete(ac.hex); }
-      upsertSil(ac, z, withLabel);
-    }else{
-      if(icons.has(ac.hex)){ map.removeLayer(icons.get(ac.hex)); icons.delete(ac.hex); }
-      upsertDot(ac, col);
-    }
-    updateTrail(ac.hex, col, 1.4, .34);
-  }
-  // cull planes that disappeared from the feed
-  for(const [hex,d] of dots){ if(!seen.has(hex)){ map.removeLayer(d); dots.delete(hex); cullTrail(hex); } }
-  for(const [hex,m] of icons){ if(!seen.has(hex)){ map.removeLayer(m); icons.delete(hex); cullTrail(hex); } }
-
+  planeLayer.redrawTrails();
+  planeLayer.redrawPlanes();   // also covers contexts where rAF is throttled (hidden/headless)
   updateAirports();
   countEl.innerHTML = `<b>${planes.length}</b> aircraft in frame`;
   return favInFrame;   // the favourite marker is drawn from cycle() (works off-frame too)
 }
+// airports are viewport-gated, so refresh them when the view settles after a pan/zoom
+// (the plane canvas handles its own moveend redraw via PlaneLayer.getEvents)
+map.on('moveend', updateAirports);
 
 // the favourite: a highlighted silhouette. est=true draws the dead-reckoned ghost (dimmed,
 // dashed projection line, frozen real trail left in place). projFrom = last-contact [lat,lon].
+let favIsEst = false;   // is the current favourite marker the dead-reckoned ghost?
+let favAnim = null;     // her glide tween — the rAF loop positions the DOM marker from this
 function updateFavourite(ac, est, projFrom){
+  favIsEst = !!(ac && est);
   if(!ac){
     if(favMarker){ map.removeLayer(favMarker); favMarker = null; }
-    if(favTrailHex){ const t=trails.get(favTrailHex); if(t){map.removeLayer(t);trails.delete(favTrailHex);} favTrailHex=null; }
+    favAnim = null; favTrailHex = null;
     clearEstLine();
-    centeredFav = null; return;
+    return;
   }
-  const fam = family(ac), size = Math.max(36, silSize(fam, map.getZoom())+8);
+  // commit her glide target (same tween shape as the canvas planes)
+  const now = performance.now(), trk = (typeof ac.track==='number') ? ac.track : 0;
+  if(!favAnim){ favAnim = {fLat:ac.lat,fLon:ac.lon,fTrk:trk, tLat:ac.lat,tLon:ac.lon,tTrk:trk, t0:now-REFRESH_MS}; }
+  else{
+    const k = Math.min(1, (now-favAnim.t0)/REFRESH_MS);
+    favAnim.fLat = favAnim.fLat+(favAnim.tLat-favAnim.fLat)*k;
+    favAnim.fLon = favAnim.fLon+(favAnim.tLon-favAnim.fLon)*k;
+    favAnim.fTrk = lerpAngle(favAnim.fTrk, favAnim.tTrk, k);
+    favAnim.tLat = ac.lat; favAnim.tLon = ac.lon; favAnim.tTrk = trk; favAnim.t0 = now;
+  }
+  const fam = famOf(ac), size = Math.max(36, silSize(fam, map.getZoom())+8);
   const key = ac.hex + fam + size + (est?'E':'');
   if(!favMarker){
     favMarker = L.marker([ac.lat,ac.lon],{icon:favIcon(ac,est),zIndexOffset:1000,keyboard:false}).addTo(map);
     favMarker.on('click', onPlaneClick); favMarker._key = key;
   }else if(favMarker._key !== key){
-    favMarker.setIcon(favIcon(ac,est)); favMarker._key = key; favMarker.setLatLng([ac.lat,ac.lon]);
-  }else{
-    favMarker.setLatLng([ac.lat,ac.lon]);
-    const svg = favMarker.getElement()?.querySelector('svg');
-    if(svg) svg.style.transform = `rotate(${ac.track||0}deg)`;
+    // icon rebuild: place at the CURRENT displayed spot, not the new fix (no jump);
+    // the glide loop walks it to the fix over the next cycle
+    favMarker.setIcon(favIcon(ac,est)); favMarker._key = key;
+    favMarker.setLatLng([favAnim.fLat, favAnim.fLon]);
   }
+  // (position + rotation between fixes are owned by the glide loop)
   favMarker._ac = ac;
   if(est){
     // ESTIMATED: draw the dashed projection from last contact; leave the real trail frozen
     // (it stops growing when she goes dark — an honest "this is the last real data" breadcrumb).
     if(projFrom) drawEstLine(projFrom,[ac.lat,ac.lon]); else clearEstLine();
   }else{
-    // LIVE: her bright wide trail; drop the projection line + clean a changed-favourite trail
+    // LIVE: the projection line goes away; her trail is drawn by the trail canvas
+    // (favTrailHex -> orange, wide, long window)
     clearEstLine();
-    if(favTrailHex && favTrailHex!==ac.hex){ const ot=trails.get(favTrailHex); if(ot){map.removeLayer(ot);trails.delete(favTrailHex);} }
     favTrailHex = ac.hex;
-    updateTrail(ac.hex, FAV_COLOR, 5, .65);   // her trail: 2x+ wider than the standard 2.2
   }
 }
 
@@ -1013,9 +1338,10 @@ function aptIcon(a){
 }
 function updateAirports(){
   const z = map.getZoom(), b = map.getBounds(), keep = new Set();
+  const w=b.getWest(), e=b.getEast(), s=b.getSouth(), n=b.getNorth();
   for(const a of AIRPORTS){
     if(a.s < 3 && z < APT_MED_ZOOM) continue;            // regionals only when zoomed in
-    if(!b.contains([a.y, a.x])) continue;                // only build what's in frame
+    if(a.y<s || a.y>n || a.x<w || a.x>e) continue;       // only build what's in frame
     keep.add(a.i);
     if(!aptMarkers.has(a.i)){
       aptMarkers.set(a.i, L.marker([a.y,a.x],{icon:aptIcon(a), pane:'airports',
@@ -1035,12 +1361,11 @@ function openDetail(ac, latlng){
   const seq = ++detailSeq;
   const pop = L.popup({className:'plane-pop', maxWidth:300, minWidth:200, autoPanPadding:[34,70]})
     .setLatLng(latlng).setContent(detailHTML(ac, undefined, undefined)).openOn(map);
-  const cs = (ac.flight||'').trim();
-  Promise.all([ cs?getRoute(cs):Promise.resolve(null), ac.r?getAC(ac.r):Promise.resolve(null) ])
+  Promise.all([ resolveRoute(ac), ac.r?getAC(ac.r):Promise.resolve(null) ])
     .then(([route, acd])=>{ if(seq===detailSeq && map.hasLayer(pop)) pop.setContent(detailHTML(ac, route, acd)); });
 }
 function airportBit(a){
-  return a ? `<b>${a.iata_code||a.icao_code||'?'}</b> <span class="city">${a.municipality||a.name||''}</span>` : '?';
+  return a ? `<b>${esc(a.iata_code||a.icao_code||'?')}</b> <span class="city">${esc(a.municipality||a.name||'')}</span>` : '?';
 }
 function detailHTML(ac, route, acd){
   const csICAO = (ac.flight||'').trim();
@@ -1058,18 +1383,20 @@ function detailHTML(ac, route, acd){
   const type = (acd&&acd.type) || ac.desc || ac.t || '—';
   // on airliners the feed's "operator" is usually a leasing trust (BANK OF UTAH TRUSTEE);
   // the real airline is already the chip, so drop the trust noise. Keep owner for GA/unknown.
-  const isComm = planeClass(ac)==='commercial';
+  const isComm = classOf(ac)==='commercial';
   const op = (isComm && al) ? '' : ((acd&&acd.registered_owner) || ac.ownOp || '');
   const photo = acd&&acd.url_photo_thumbnail;
-  const icaoTag = (csIATA && csICAO && csIATA!==csICAO) ? `<span class="pop-icao">${csICAO}</span>` : '';
+  const icaoTag = (csIATA && csICAO && csIATA!==csICAO) ? `<span class="pop-icao">${esc(csICAO)}</span>` : '';
   let routeRow;
+  // the route arriving here came through resolveRoute() — already geo-validated and
+  // leg-picked across both sources — so it's show-or-nothing, no re-gate.
   if(route===undefined) routeRow = `<div class="pop-route dim">looking up route…</div>`;
-  else if(o && d && routeFits(ac, route)) routeRow = `<div class="pop-route">${airportBit(o)} <span>→</span> ${airportBit(d)}</div>`;
-  else routeRow = `<div class="pop-route dim">route unavailable</div>`;   // missing or stale (doesn't match position)
-  return `<div class="pop-cs">${cs}${icaoTag}${al?`<span class="pop-al"${alColor?` style="color:${alColor}"`:''}>${al}</span>`:''}</div>`
+  else if(o && d) routeRow = `<div class="pop-route">${airportBit(o)} <span>→</span> ${airportBit(d)}</div>`;
+  else routeRow = `<div class="pop-route dim">route unavailable</div>`;   // genuinely unpublished (charters) or nothing fits
+  return `<div class="pop-cs">${esc(cs)}${icaoTag}${al?`<span class="pop-al"${alColor?` style="color:${alColor}"`:''}>${esc(al)}</span>`:''}</div>`
        + routeRow
-       + `<div class="pop-meta">${type}${op?` · ${op}`:''}</div>`
-       + (photo?`<img class="pop-img" src="${photo}" referrerpolicy="no-referrer" onerror="this.remove()">`:'');
+       + `<div class="pop-meta">${esc(type)}${op?` · ${esc(op)}`:''}</div>`
+       + (photo?`<img class="pop-img" src="${esc(photo)}" referrerpolicy="no-referrer" onerror="this.remove()">`:'');
 }
 async function getRoute(cs){
   try{ const j = (await tryProxy('/api/route?cs='+encodeURIComponent(cs)))
@@ -1080,6 +1407,47 @@ async function getAC(reg){
   try{ const j = (await tryProxy('/api/ac?reg='+encodeURIComponent(reg)))
         || await (await fetch(`https://api.adsbdb.com/v0/aircraft/${encodeURIComponent(reg)}`)).json();
     return (j && j.response && j.response.aircraft) || null; }catch(e){ return null; }
+}
+
+// ---- fallback route source: adsb.lol's community VRS standing data (CORS-open CDN).
+// Multi-leg aware: a file can hold a whole rotation (e.g. RDU-EWR-ORD-PDX); each
+// adjacent pair is a candidate leg. Audit (Jun 11, 130 live callsigns): adsbdb showed
+// 36%, and of the routes it hid as stale, adsb.lol had a geo-fitting route for ~70%.
+const LOL_CDN = 'https://vrs-standing-data.adsb.lol/routes';
+function lolToAirport(a){   // normalise to the adsbdb shape the rest of the code speaks
+  return {iata_code:a.iata, icao_code:a.icao, municipality:a.location||a.name||'',
+          latitude:a.lat, longitude:a.lon};
+}
+async function getLolAirports(cs){
+  try{
+    const j = (await tryProxy('/api/lolroute?cs='+encodeURIComponent(cs)))
+          || await (await fetch(`${LOL_CDN}/${encodeURIComponent(cs.slice(0,2))}/${encodeURIComponent(cs)}.json`)).json();
+    const apts = j && j._airports;
+    return (apts && apts.length>=2) ? apts.map(lolToAirport) : null;
+  }catch(e){ return null; }
+}
+// the route to DISPLAY for this aircraft. Both sources are fetched (cheap: both cached
+// 1h server-side / CDN), every candidate leg is ranked against the live position,
+// heading and climb rate, and the strongest evidence wins; ties go to adsbdb (it
+// carries the IATA flight # + airline metadata). Returns a validated
+// {origin,destination,...} or null -> "route unavailable".
+async function resolveRoute(ac){
+  const cs = (ac.flight||'').trim();
+  if(!cs) return null;
+  const [r, apts] = await Promise.all([getRoute(cs), getLolAirports(cs)]);
+  const rRank = (r && r.origin && r.destination) ? legRank(ac, r.origin, r.destination) : 0;
+  let best=null, bestRank=0;
+  if(apts) for(let i=0;i<apts.length-1;i++){
+    const k = legRank(ac, apts[i], apts[i+1]);
+    if(k > bestRank){ bestRank=k; best={origin:apts[i], destination:apts[i+1]}; }
+  }
+  if(rRank > 0 && rRank >= bestRank) return r;
+  if(best){
+    // callsign-derived metadata (flight #, airline) is route-independent — keep it
+    if(r){ best.callsign_iata = r.callsign_iata; best.airline = r.airline; }
+    return best;
+  }
+  return null;
 }
 
 // ============================================================================
@@ -1196,8 +1564,11 @@ setInterval(ghostTick, 120);
     const v=(await r.json()).v; if(base===null) base=v; else if(v!==base) location.reload(); }catch(e){} }, 2000);
 })();
 
-setInterval(()=>{document.getElementById('clock').textContent =
-  new Date().toLocaleTimeString('en-US',{hour12:false});},1000);
+// cached formatter + element: toLocaleTimeString builds a fresh Intl formatter per
+// call, which is silly to pay every second forever on a Pi.
+const clockEl = document.getElementById('clock');
+const clockFmt = new Intl.DateTimeFormat('en-US',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
+setInterval(()=>{ clockEl.textContent = clockFmt.format(new Date()); },1000);
 
 cycle();
 setInterval(cycle, REFRESH_MS);
