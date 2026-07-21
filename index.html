@@ -207,16 +207,19 @@ const MI_RADIUS = 250;                                 // nm; matches server.py
 const HAS_PROXY = /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
 async function tryProxy(path){
   if(!HAS_PROXY) return null;
-  try{ const r = await fetch(path); if(!r.ok) return null; return await r.json(); }
+  try{ const r = await fetch(path, {signal: AbortSignal.timeout(8000)}); if(!r.ok) return null; return await r.json(); }
   catch(e){ return null; }
 }
+// 8s timeout on the polled fetches: a hung socket otherwise blocks the cycle for
+// ~20s+ while every sprite dead-reckons to its cap, and the eventual stale frame
+// used to recommit against that. Bounded, the next interval tick retries sooner.
 async function getPlanes(){
   return (await tryProxy('/api/planes'))
-      || await (await fetch(`${API_DIRECT}/point/${MI.lat}/${MI.lon}/${MI_RADIUS}`)).json();
+      || await (await fetch(`${API_DIRECT}/point/${MI.lat}/${MI.lon}/${MI_RADIUS}`, {signal: AbortSignal.timeout(8000)})).json();
 }
 async function getFav(reg){
   return (await tryProxy('/api/fav?reg='+encodeURIComponent(reg)))
-      || await (await fetch(`${API_DIRECT}/reg/${encodeURIComponent(reg)}`)).json();
+      || await (await fetch(`${API_DIRECT}/reg/${encodeURIComponent(reg)}`, {signal: AbortSignal.timeout(8000)})).json();
 }
 
 // ---- smooth continuous wheel zoom (mutsuyuki/Leaflet.SmoothWheelZoom, inlined) ----
@@ -712,27 +715,54 @@ function sprite(fam, cls, big){
 // On each data cycle the tween restarts: from = wherever the plane is DISPLAYED right
 // now (mid-tween safe), to = the new fix; k runs 0->1 over REFRESH_MS. One poll of
 // latency, perfectly smooth, no overshoot (the FR24 approach).
-const anim = new Map();           // hex -> {fLat,fLon,fTrk, tLat,tLon,tTrk, t0}
+const anim = new Map();           // hex -> {fLat,fLon,fTrk, tLat,tLon,tTrk, gs, t0}
+let liveHexes = new Set();        // hexes present in the CURRENT poll (render() refreshes it);
+                                  // trail clamping keys off this, not anim existence — a
+                                  // grace-window dropout has no sprite/connector to cover
+                                  // the withheld segment, so its full trail must draw
+const EXTRAP_MAX_MS = 10000;      // dead-reckon past a late poll for up to ~2.5 cycles, then hold
 function lerpAngle(a,b,k){ const d=((b-a+540)%360)-180; return (a+d*k+360)%360; }
-function commitAnim(hex, lat, lon, trk, now){
+// One evaluator for every glide (canvas planes AND her DOM marker): lerp f->t over
+// REFRESH_MS, and past k=1 keep dead-reckoning along the target track at the fix's
+// groundspeed (capped) — so a late poll or a stale repeated position never freezes
+// the sprite. commitAnim starts the next tween from THIS displayed position, so an
+// extrapolation overshoot eases back over the next cycle instead of snapping.
+function tweenPos(st, now){
+  const el = now - st.t0, k = el >= REFRESH_MS ? 1 : el/REFRESH_MS;
+  let lat = st.fLat+(st.tLat-st.fLat)*k, trk = lerpAngle(st.fTrk, st.tTrk, k);
+  // antimeridian: a ±180-straddling pair would lerp the long way round — snap to target
+  let lon = (Math.abs(st.tLon-st.fLon) > 180) ? st.tLon : st.fLon+(st.tLon-st.fLon)*k;
+  if(k === 1 && st.gs){
+    const nm = st.gs * Math.min(el - REFRESH_MS, EXTRAP_MAX_MS) / 3.6e6;  // kts × ms → nm
+    const r = st.tTrk*RAD;
+    lat = st.tLat + (nm/60)*Math.cos(r);
+    lon += (nm/60)*Math.sin(r)/Math.max(.2, Math.cos(st.tLat*RAD));
+    if(lon > 180) lon -= 360; else if(lon < -180) lon += 360;
+  }
+  return [lat, lon, trk];
+}
+function commitAnim(hex, lat, lon, trk, gs, now){
   // a fix can arrive with NO track (just-acquired / on-ground / heli). Coerce to a
   // number on FIRST sight — an undefined here would feed lerpAngle and poison fTrk
   // to NaN forever (canvas rotate(NaN) => the sprite silently stops drawing).
   const t = (typeof trk==='number') ? trk : 0;
   let st = anim.get(hex);
-  if(!st){ anim.set(hex, {fLat:lat,fLon:lon,fTrk:t, tLat:lat,tLon:lon,tTrk:t, t0:now-REFRESH_MS}); return; }
-  const k = Math.min(1, (now-st.t0)/REFRESH_MS);
-  st.fLat = st.fLat+(st.tLat-st.fLat)*k;
-  st.fLon = st.fLon+(st.tLon-st.fLon)*k;
-  st.fTrk = lerpAngle(st.fTrk, st.tTrk, k);
+  if(!st){ anim.set(hex, {fLat:lat,fLon:lon,fTrk:t, tLat:lat,tLon:lon,tTrk:t, gs:gs||0, t0:now-REFRESH_MS}); return; }
+  // identical fix (stale upstream position, or a failed poll recommitting the kept
+  // frame): do NOT restart the tween — from would be the extrapolated position and
+  // the target the old fix BEHIND it (backward glide). Leave t0 alone so the
+  // dead-reckoning clock keeps running to its cap, then holds. This is also what
+  // actually un-freezes planes whose served position repeats across polls.
+  if(lat===st.tLat && lon===st.tLon){ st.gs = gs||0; return; }
+  const d = tweenPos(st, now);       // wherever it's DISPLAYED, extrapolation included
+  st.fLat = d[0]; st.fLon = d[1]; st.fTrk = d[2];
   st.tLat = lat; st.tLon = lon;
   st.tTrk = (typeof trk==='number') ? trk : st.tTrk;
+  st.gs = gs||0;
   st.t0 = now;
 }
 function animPos(hex, now){
-  const st = anim.get(hex); if(!st) return null;
-  const k = Math.min(1, (now-st.t0)/REFRESH_MS);
-  return [st.fLat+(st.tLat-st.fLat)*k, st.fLon+(st.tLon-st.fLon)*k, lerpAngle(st.fTrk,st.tTrk,k)];
+  const st = anim.get(hex); return st ? tweenPos(st, now) : null;
 }
 
 const PlaneLayer = L.Layer.extend({
@@ -824,19 +854,29 @@ const PlaneLayer = L.Layer.extend({
     const buckets = [];              // sparse, indexed by small integer key
     const FADE = [.08,.16,.26,.38], FADE_FAV = [.18,.34,.52,.72], S = 300;
     for(const [hex,h] of history){
-      if(h.length < 2) continue;
       const isF = hex===favTrailHex;
+      // PLANE LEADS THE PATH: while a glide is in flight, the newest committed fix
+      // is where the sprite is HEADED, not where it is — so the static trail stops
+      // one fix short, and the per-frame head connector (redrawPlanes) draws the
+      // live segment from there to the gliding sprite. The trail only "catches up"
+      // as the plane actually travels it.
+      // Clamp ONLY while something actually draws the withheld segment: for her,
+      // live tracking (!favIsEst — the ghost's connector is suppressed and the
+      // dashed est line starts AT the withheld fix); for the rest, planes still in
+      // the feed (a grace-window dropout has no sprite/connector — draw it all).
+      const end = (isF ? (favAnim && !favIsEst) : (anim.get(hex) && liveHexes.has(hex))) ? h.length-1 : h.length;
+      if(end < 2) continue;
       if(!isF && h._cls && hidden[h._cls]) continue;
       // viewport reject on head AND tail: a long trail (esp. her 50nm) can straddle
       // the view with its head panned off — culling on the head alone made the
       // still-visible body disappear at high zoom.
-      const hx = px(h[h.length-1][1]), hy = py(h[h.length-1][0]);
-      const tx = px(h[0][1]),          ty = py(h[0][0]);
+      const hx = px(h[end-1][1]), hy = py(h[end-1][0]);
+      const tx = px(h[0][1]),     ty = py(h[0][0]);
       if((hx<-S&&tx<-S)||(hx>bs.x+S&&tx>bs.x+S)||(hy<-S&&ty<-S)||(hy>bs.y+S&&ty>bs.y+S)) continue;
-      const w = isF ? 4.5 : 1.4, fade = isF ? FADE_FAV : FADE, n = h.length-1;
+      const w = isF ? 4.5 : 1.4, fade = isF ? FADE_FAV : FADE, n = end-1;
       const baseIdx = isF ? 5 : (CLS_IDX[h._cls]||0), favBit = isF?1:0;
       let prevx = px(h[0][1]), prevy = py(h[0][0]);
-      for(let i=1; i<h.length; i++){
+      for(let i=1; i<end; i++){
         const cx = px(h[i][1]), cy = py(h[i][0]);
         const tier = i/n < .25 ? 0 : i/n < .5 ? 1 : i/n < .75 ? 2 : 3;
         const key = baseIdx*8 + tier*2 + favBit;
@@ -877,15 +917,18 @@ const PlaneLayer = L.Layer.extend({
       const lat = ap?ap[0]:ac.lat, lon = ap?ap[1]:ac.lon, trk = ap?ap[2]:(ac.track||0);
       const x = px(lon), y = py(lat);
       if(x<-24 || y<-24 || x>bs.x+24 || y>bs.y+24) continue;
-      // live head segment: last committed trail point -> gliding position, so the
-      // trail stays attached to the plane between fixes (only matters zoomed in)
+      // live head segment: the trail's last DRAWN point -> gliding position. The
+      // static trail stops one fix short while gliding (redrawTrails), so this IS
+      // the trail's head, growing behind the plane. (Only drawn when zoomed enough
+      // for the gap to be visible.)
       if(connect){
         const h = history.get(ac.hex);
-        if(h && h.length){
-          const lx = px(h[h.length-1][1]), ly = py(h[h.length-1][0]);
+        const li = h ? (anim.get(ac.hex) ? h.length-2 : h.length-1) : -1;
+        if(li >= 0){
+          const lx = px(h[li][1]), ly = py(h[li][0]);
           if(Math.abs(lx-x)>2 || Math.abs(ly-y)>2){
             ctx.strokeStyle = planeColor(ac);
-            ctx.globalAlpha = .4; ctx.lineWidth = 1.4;
+            ctx.globalAlpha = .38; ctx.lineWidth = 1.4;
             ctx.beginPath(); ctx.moveTo(lx,ly); ctx.lineTo(x,y); ctx.stroke();
             ctx.globalAlpha = 1;
           }
@@ -904,19 +947,18 @@ const PlaneLayer = L.Layer.extend({
       }
       if(!drawn){ ctx.fillStyle = planeColor(ac); ctx.beginPath(); ctx.arc(x,y,4,0,6.2832); ctx.fill(); }
     }
-    // favourite head connector: her marker is a DOM element that glides ahead of her
-    // canvas trail (which ends at the last committed fix). Bridge the gap so the
-    // orange trail stays visually attached to her marker between fixes.
+    // favourite head connector: her trail's last DRAWN point (one fix short while
+    // gliding) -> her gliding DOM marker, styled as the trail's newest tier so it
+    // reads as the trail growing behind her.
     if(connect && favTrailHex && favAnim && !favIsEst){
       const h = history.get(favTrailHex);
-      if(h && h.length){
-        const k = Math.min(1, (now-favAnim.t0)/REFRESH_MS);
-        const gx = px(favAnim.fLon+(favAnim.tLon-favAnim.fLon)*k);
-        const gy = py(favAnim.fLat+(favAnim.tLat-favAnim.fLat)*k);
-        const lx = px(h[h.length-1][1]), ly = py(h[h.length-1][0]);
+      if(h && h.length >= 2){
+        const p = tweenPos(favAnim, now);
+        const gx = px(p[1]), gy = py(p[0]);
+        const lx = px(h[h.length-2][1]), ly = py(h[h.length-2][0]);
         if(Math.abs(lx-gx)>2 || Math.abs(ly-gy)>2){
           ctx.strokeStyle = FAV_COLOR;
-          ctx.globalAlpha = .65; ctx.lineWidth = 4.5;
+          ctx.globalAlpha = .72; ctx.lineWidth = 4.5;
           ctx.beginPath(); ctx.moveTo(lx,ly); ctx.lineTo(gx,gy); ctx.stroke();
           ctx.globalAlpha = 1;
         }
@@ -947,15 +989,12 @@ function glideFrame(now){
   // CSS-animates marker positions through the zoom, and an explicit setLatLng each
   // frame would fight that and make her hop. (redrawPlanes self-suspends already.)
   if(favMarker && favAnim && !planeLayer._zooming){
-    const k = Math.min(1, (performance.now()-favAnim.t0)/REFRESH_MS);
-    // antimeridian guard: if the two fixes straddle ±180 lon, a linear lerp would
-    // sweep her the long way across the whole map. Snap to the target instead.
-    const lon = Math.abs(favAnim.tLon-favAnim.fLon) > 180
-      ? favAnim.tLon
-      : favAnim.fLon+(favAnim.tLon-favAnim.fLon)*k;
-    favMarker.setLatLng([favAnim.fLat+(favAnim.tLat-favAnim.fLat)*k, lon]);
+    // tweenPos handles the lerp, the ±180 antimeridian snap, AND extrapolation
+    // past a late poll — same evaluator as the canvas planes.
+    const p = tweenPos(favAnim, performance.now());
+    favMarker.setLatLng([p[0], p[1]]);
     const svg = favMarker.getElement() && favMarker.getElement().querySelector('svg');
-    if(svg) svg.style.transform = `rotate(${lerpAngle(favAnim.fTrk, favAnim.tTrk, k)}deg)`;
+    if(svg) svg.style.transform = `rotate(${p[2]}deg)`;
   }
 }
 requestAnimationFrame(glideFrame);
@@ -1133,6 +1172,11 @@ async function _cycle(){
     favMisses = 0;
     pushHistory(fd); favPos = [fd.lat, fd.lon];
     updateFavourite(fd, false);
+    // her history push lands AFTER render() already redrew trails, so that redraw
+    // clamped her trail against PRE-push history — leaving one segment drawn by
+    // neither the static trail nor the head connector. Redraw now that it's pushed
+    // (~2-3ms once per 4s; the other planes' clamp is unaffected by a second pass).
+    planeLayer.redrawTrails();
     // following? keep her centred. setView(animate:false) = imperceptible few-px nudge each
     // cycle; a user drag/wheel sets following=false so it stops the instant you grab the map.
     if(following && favPos){ map.setView(favPos, map.getZoom(), {animate:false}); }
@@ -1244,7 +1288,8 @@ function render(){
     // history grows even for legend-hidden classes (cheap) so toggling a class
     // back on shows its trails instantly instead of regrowing from zero
     pushHistory(ac);
-    commitAnim(ac.hex, ac.lat, ac.lon, ac.track, now);
+    commitAnim(ac.hex, ac.lat, ac.lon, ac.track,
+               (ac.alt_baro!=='ground' && typeof ac.gs==='number') ? ac.gs : 0, now);
   }
   // cull trails/history only after the GRACE window — edge-of-circle blinks and
   // brief signal gaps no longer wipe a plane's trail
@@ -1254,6 +1299,7 @@ function render(){
       history.delete(hex); anim.delete(hex);
     }
   }
+  liveHexes = seen;   // trail clamp reads this (only feed-present planes get clamped)
   planeLayer.redrawTrails();
   planeLayer.redrawPlanes();   // also covers contexts where rAF is throttled (hidden/headless)
   updateAirports();
@@ -1276,15 +1322,19 @@ function updateFavourite(ac, est, projFrom){
     clearEstLine();
     return;
   }
-  // commit her glide target (same tween shape as the canvas planes)
+  // commit her glide target (same tween shape as the canvas planes). The ghost
+  // estimate carries no gs -> no extrapolation for it (it advances per cycle by
+  // its own dead-reckoning; doubling up would double-count her speed).
   const now = performance.now(), trk = (typeof ac.track==='number') ? ac.track : 0;
-  if(!favAnim){ favAnim = {fLat:ac.lat,fLon:ac.lon,fTrk:trk, tLat:ac.lat,tLon:ac.lon,tTrk:trk, t0:now-REFRESH_MS}; }
-  else{
-    const k = Math.min(1, (now-favAnim.t0)/REFRESH_MS);
-    favAnim.fLat = favAnim.fLat+(favAnim.tLat-favAnim.fLat)*k;
-    favAnim.fLon = favAnim.fLon+(favAnim.tLon-favAnim.fLon)*k;
-    favAnim.fTrk = lerpAngle(favAnim.fTrk, favAnim.tTrk, k);
-    favAnim.tLat = ac.lat; favAnim.tLon = ac.lon; favAnim.tTrk = trk; favAnim.t0 = now;
+  const gs = (!est && ac.alt_baro!=='ground' && typeof ac.gs==='number') ? ac.gs : 0;
+  if(!favAnim){ favAnim = {fLat:ac.lat,fLon:ac.lon,fTrk:trk, tLat:ac.lat,tLon:ac.lon,tTrk:trk, gs:gs, t0:now-REFRESH_MS}; }
+  else if(ac.lat===favAnim.tLat && ac.lon===favAnim.tLon){
+    favAnim.gs = gs;                    // identical fix: keep the tween/extrapolation clock
+  }else{
+    const d = tweenPos(favAnim, now);   // displayed pos, extrapolation included — no snap
+    favAnim.fLat = d[0]; favAnim.fLon = d[1]; favAnim.fTrk = d[2];
+    favAnim.tLat = ac.lat; favAnim.tLon = ac.lon; favAnim.tTrk = trk;
+    favAnim.gs = gs; favAnim.t0 = now;
   }
   const fam = famOf(ac), size = Math.max(36, silSize(fam, map.getZoom())+8);
   const key = ac.hex + fam + size + (est?'E':'');
