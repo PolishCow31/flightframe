@@ -976,13 +976,28 @@ map.createPane('planes').style.zIndex = 450;   // above rings(400), below DOM ma
 const planeLayer = new PlaneLayer({pane:'planes'});
 map.addLayer(planeLayer);
 
-// ---- the glide loop: ~30fps cap (Pi-friendly), suspended while zooming.
+// ---- the glide loop: ZOOM-ADAPTIVE frame rate, suspended while zooming.
+// The redraw only needs to run when the fastest plausible plane has moved ~0.4px
+// at the CURRENT zoom. At the wall frame's default z6 a 480kt jet moves ~0.1px/s,
+// so one redraw every ~2s is visually identical to 30fps — and ~60x less canvas
+// work, which is the difference between smooth and laggy on the Raspberry Pi.
+// Full 30fps only engages at street-level zooms where motion is actually visible.
+// Pans/zooms/data commits redraw immediately via their own paths regardless.
 // rAF stops automatically in hidden tabs, so this costs nothing in the background.
-const FRAME_MS = 33;
+const MAX_MPS = 260;             // ~505kt — fastest thing the frame will ever show
+let frameInterval = 33;          // ms between glide redraws; retuned per zoom
+function retuneFrameRate(){
+  const mpp = 40075016.686 * Math.abs(Math.cos(map.getCenter().lat*RAD))
+              / (256 * Math.pow(2, map.getZoom()));   // metres per CSS pixel here
+  const pxPerSec = MAX_MPS / mpp;
+  frameInterval = Math.max(33, Math.min(2000, 400 / pxPerSec));  // time to move 0.4px
+}
+retuneFrameRate();
+map.on('zoomend moveend', retuneFrameRate);
 let lastFrame = 0;
 function glideFrame(now){
   requestAnimationFrame(glideFrame);
-  if(now - lastFrame < FRAME_MS) return;
+  if(now - lastFrame < frameInterval) return;
   lastFrame = now;
   planeLayer.redrawPlanes();
   // the favourite is a DOM marker — glide it too. Suspend during a zoom: Leaflet
