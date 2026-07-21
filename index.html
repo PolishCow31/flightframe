@@ -116,8 +116,6 @@
   #legend .tog{cursor:pointer}
   #legend .tog.off{opacity:.32;text-decoration:line-through}
   #legend i.ln{width:14px;height:3px;border-radius:2px}
-  #legend i.grad{width:14px;height:5px;border-radius:2px;
-    background:linear-gradient(90deg,#2ee68b,#d9e032,#f07a26,#c44ae0,#4aa3ff)}
 
   /* ---- bottom-right control buttons (centre her plane / centre Livonia) ---- */
   #ctl{position:absolute;right:14px;bottom:26px;z-index:1000;display:flex;flex-direction:column;gap:8px}
@@ -180,8 +178,6 @@
   <div class="tog" data-cls="mil"><i style="background:#2e7d44"></i>Military</div>
   <div class="lh">Marker</div>
   <div><i style="background:#ff7d1a"></i>Her plane</div>
-  <div class="lh">Trails</div>
-  <div class="tog" id="alt-tog"><i class="grad"></i>Altitude colors</div>
 </div>
 
 <div id="ctl">
@@ -364,18 +360,9 @@ const TRAIL_MAX_PTS = 160;    // hard cap (hovering helis never accrue distance)
 const FAV_MAX_PTS = 800;
 const TRAIL_GRACE_MS = 90000; // keep history this long after a plane drops off the feed
                               // (edge-of-circle blinks + brief signal gaps don't wipe trails)
-let altTrails = false;        // legend toggle: colour trails by altitude instead of class
-try{ altTrails = localStorage.getItem('ff_alttrails')==='1'; }catch(e){}
-// altitude ramp, 5000ft buckets: low = green/yellow climbs through orange/red to
-// high-cruise violet/blue. Quantised so trail strokes batch per colour.
-const ALT_COLORS = ['#2ee68b','#7ce63a','#d9e032','#f5b32a','#f07a26','#e84c52','#c44ae0','#7a5cff','#4aa3ff'];
-function altBucket(alt){ return typeof alt!=='number' ? 0 : Math.max(0, Math.min(8, Math.floor(alt/5000))); }
-function altColor(alt){ return typeof alt!=='number' ? '#9fb0c8' : ALT_COLORS[altBucket(alt)]; }
 // closed colour palette so trail segments key on a small INTEGER (no per-segment
-// string allocation in the hot redraw): 0=default 1-4=class 5=fav 6-14=altitude.
-const TRAIL_PAL = ['#9fb0c8', CAT.commercial, CAT.private, CAT.heli, CAT.mil, FAV_COLOR,
-                   ALT_COLORS[0],ALT_COLORS[1],ALT_COLORS[2],ALT_COLORS[3],ALT_COLORS[4],
-                   ALT_COLORS[5],ALT_COLORS[6],ALT_COLORS[7],ALT_COLORS[8]];
+// string allocation in the hot redraw): 0=default 1-4=class 5=fav.
+const TRAIL_PAL = ['#9fb0c8', CAT.commercial, CAT.private, CAT.heli, CAT.mil, FAV_COLOR];
 const CLS_IDX = {commercial:1, private:2, heli:3, mil:4};
 
 // ---- airport terminals (pulsing beacons). Hubs (s:3) always show; regionals
@@ -433,16 +420,6 @@ document.querySelectorAll('#legend .tog[data-cls]').forEach(el=>{
     render();
   });
 });
-// trails colour mode: class colours (default) <-> altitude ramp; persisted
-const altTog = document.getElementById('alt-tog');
-altTog.classList.toggle('off', !altTrails);
-altTog.addEventListener('click', ()=>{
-  altTrails = !altTrails;
-  altTog.classList.toggle('off', !altTrails);
-  try{ localStorage.setItem('ff_alttrails', altTrails?'1':'0'); }catch(e){}
-  planeLayer.redrawTrails();
-});
-
 // ---- bottom-right buttons: centre her plane / centre Livonia ----
 const btnFav = document.getElementById('btn-fav');
 document.getElementById('btn-liv').addEventListener('click', ()=>{
@@ -858,10 +835,9 @@ const PlaneLayer = L.Layer.extend({
       for(let i=1; i<h.length; i++){
         const cx = px(h[i][1]), cy = py(h[i][0]);
         const tier = i/n < .25 ? 0 : i/n < .5 ? 1 : i/n < .75 ? 2 : 3;
-        const colorIdx = altTrails ? (6 + altBucket(h[i][2])) : baseIdx;
-        const key = colorIdx*8 + tier*2 + favBit;
+        const key = baseIdx*8 + tier*2 + favBit;
         let bk = buckets[key];
-        if(!bk){ bk = buckets[key] = {col:TRAIL_PAL[colorIdx], alpha:fade[tier], w, segs:[]}; }
+        if(!bk){ bk = buckets[key] = {col:TRAIL_PAL[baseIdx], alpha:fade[tier], w, segs:[]}; }
         bk.segs.push(prevx, prevy, cx, cy);
         prevx = cx; prevy = cy;
       }
@@ -904,7 +880,7 @@ const PlaneLayer = L.Layer.extend({
         if(h && h.length){
           const lx = px(h[h.length-1][1]), ly = py(h[h.length-1][0]);
           if(Math.abs(lx-x)>2 || Math.abs(ly-y)>2){
-            ctx.strokeStyle = altTrails ? altColor(h[h.length-1][2]) : planeColor(ac);
+            ctx.strokeStyle = planeColor(ac);
             ctx.globalAlpha = .4; ctx.lineWidth = 1.4;
             ctx.beginPath(); ctx.moveTo(lx,ly); ctx.lineTo(x,y); ctx.stroke();
             ctx.globalAlpha = 1;
@@ -935,7 +911,7 @@ const PlaneLayer = L.Layer.extend({
         const gy = py(favAnim.fLat+(favAnim.tLat-favAnim.fLat)*k);
         const lx = px(h[h.length-1][1]), ly = py(h[h.length-1][0]);
         if(Math.abs(lx-gx)>2 || Math.abs(ly-gy)>2){
-          ctx.strokeStyle = altTrails ? altColor(h[h.length-1][2]) : FAV_COLOR;
+          ctx.strokeStyle = FAV_COLOR;
           ctx.globalAlpha = .65; ctx.lineWidth = 4.5;
           ctx.beginPath(); ctx.moveTo(lx,ly); ctx.lineTo(gx,gy); ctx.stroke();
           ctx.globalAlpha = 1;
