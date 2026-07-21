@@ -191,11 +191,11 @@
   <div class="tog" data-cls="heli"><i style="background:#c678ff"></i>Helicopter</div>
   <div class="tog" data-cls="mil"><i style="background:#2e7d44"></i>Military</div>
   <div class="lh">Marker</div>
-  <div><i style="background:#ff7d1a"></i>Her plane</div>
+  <div><i style="background:#ff7d1a"></i>Allie's plane</div>
 </div>
 
 <div id="ctl">
-  <button id="btn-fav" type="button"><i style="background:var(--fav)"></i>Her plane</button>
+  <button id="btn-fav" type="button"><i style="background:var(--fav)"></i>Allie's plane</button>
   <button id="btn-liv" type="button"><i style="background:#2ee6c0"></i>Livonia</button>
 </div>
 
@@ -339,7 +339,7 @@ const CAT = { commercial:'#3d9bfe', private:'#ffb43b', heli:'#c678ff', mil:'#2e7
 const hidden = Object.assign({ commercial:false, private:false, heli:false, mil:false },
   (()=>{ try{ return JSON.parse(localStorage.getItem('ff_hidden'))||{}; }catch(e){ return {}; } })());
 let favPos = null;                                // last known position of the favourite (centre button)
-let following = false;                            // actively follow her plane each cycle ("Her plane" button)
+let following = false;                            // actively follow her plane each cycle ("Allie's plane" button)
 const FOLLOW_ZOOM = 5;                            // zoom OUT while following so you can read the surroundings
 let estLine = null;                               // dashed projection line: last contact -> estimated position
 let razorCardActive = false;                      // true while the Razor Crest easter egg owns the info card
