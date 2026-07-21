@@ -199,10 +199,14 @@ const REFRESH_MS = 4000;                    // poll cadence; also the glide-twee
 const API_DIRECT = 'https://api.airplanes.live/v2';   // used when no local proxy is present
 const MI_RADIUS = 250;                                 // nm; matches server.py
 
-// Try the local Python proxy first (the Pi runs server.py — cached, rate-limit-safe).
-// Fall back to calling airplanes.live straight from the browser (its CORS is open),
-// so this exact same file ALSO works as a plain static page with no server at all.
+// On localhost, try the local Python proxy first (cached, rate-limit-safe), then
+// fall back to calling the APIs straight from the browser (their CORS is open).
+// Hosted (pages.dev) skips the proxy attempt entirely: there IS no /api/* there,
+// and the SPA fallback answers every miss with 200 + the full page — so each
+// "try" would download the whole index.html before falling through. Junk traffic.
+const HAS_PROXY = /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
 async function tryProxy(path){
+  if(!HAS_PROXY) return null;
   try{ const r = await fetch(path); if(!r.ok) return null; return await r.json(); }
   catch(e){ return null; }
 }
@@ -1534,8 +1538,11 @@ map.on('popupclose', e=>{ if(e.popup && e.popup._razor){ razorCardActive=false; 
 ghostSpawn(); ghostRender();
 setInterval(ghostTick, 120);
 
-// ---- dev live-reload: poll the file version and reload the page when it changes ----
-(function(){ let base=null;
+// ---- dev live-reload: poll the file version and reload the page when it changes.
+//      localhost only: hosted (pages.dev) has no /api/version — its SPA fallback
+//      answers 200 + the full page, so polling there is pure junk traffic ----
+(function(){ if(!/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) return;
+  let base=null;
   setInterval(async()=>{ try{ const r=await fetch('/api/version',{cache:'no-store'}); if(!r.ok) return;
     const v=(await r.json()).v; if(base===null) base=v; else if(v!==base) location.reload(); }catch(e){} }, 2000);
 })();
