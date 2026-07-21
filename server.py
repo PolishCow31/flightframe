@@ -24,11 +24,11 @@ from urllib.parse import urlparse, parse_qs, quote
 HERE = os.path.dirname(os.path.abspath(__file__))
 PORT = int(os.environ.get("PORT", "8001"))
 
-# --- The "frame": Livonia (home) + a 250nm radius ---
-# 250nm is the API maximum for a single point query. Centred on home it covers
-# all of lower Michigan + eastern UP, Ohio, Lake Erie and southern Ontario
-# (incl. Toronto); the far western UP falls outside — near-zero traffic there.
-MI_LAT, MI_LON, MI_RADIUS = 42.36837, -83.35271, 250
+# --- The "frame": Livonia (home) + a 155nm radius ---
+# 155nm ~= mid-Lake Michigan: keeps southeast Michigan dense while excluding the
+# ORD/MDW terminal swarm (~193nm) — the brother's call for the Pi frame, Jul 21.
+# (250 was the API max and covered Chicago/Toronto/Mackinac — flip back anytime.)
+MI_LAT, MI_LON, MI_RADIUS = 42.36837, -83.35271, 155
 UPSTREAM = "https://api.airplanes.live/v2"
 ADSBDB = "https://api.adsbdb.com/v0"          # callsign -> route/airline, reg -> aircraft
 LOL_ROUTES = "https://vrs-standing-data.adsb.lol/routes"   # community VRS route db (fallback source)

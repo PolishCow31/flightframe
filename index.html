@@ -203,7 +203,11 @@
 const MI = {lat:42.36837, lon:-83.35271};   // Livonia — home is the radar centre
 const REFRESH_MS = 4000;                    // poll cadence; also the glide-tween window
 const API_DIRECT = 'https://api.airplanes.live/v2';   // used when no local proxy is present
-const MI_RADIUS = 250;                                 // nm; matches server.py
+const MI_RADIUS = 155;                                 // nm; matches server.py.
+// 155nm ~= mid-Lake Michigan (his brother's call, Jul 21): excludes the ORD/MDW
+// terminal swarm (~193nm away) and roughly halves the plane count + payload.
+// Accepted trade: Toronto (~181nm), Traverse City (~172nm) and the Mackinac tip
+// (~213nm) fall outside — the frame is now a southeast-Michigan radar.
 
 // On localhost, try the local Python proxy first (cached, rate-limit-safe), then
 // fall back to calling the APIs straight from the browser (their CORS is open).
@@ -301,8 +305,10 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{
   attribution:'&copy; OpenStreetMap &copy; CARTO · data: airplanes.live · routes: adsbdb + adsb.lol'
 }).addTo(map);
 
-// faint radar rings, purely decorative, centred on the frame
-[100,185,370].forEach(km=>L.circle([MI.lat,MI.lon],{radius:km*1000,
+// faint radar rings, purely decorative, centred on the frame.
+// Outermost ring = the 155nm fetch edge, so the traffic cutoff reads as the
+// radar's range instead of planes just vanishing mid-map.
+[96,191,287].forEach(km=>L.circle([MI.lat,MI.lon],{radius:km*1000,
   color:'#1d6fa5',weight:1,opacity:.18,fill:false}).addTo(map));
 
 // ---- plane rendering, level-of-detail ----
