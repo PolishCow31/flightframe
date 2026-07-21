@@ -16,7 +16,11 @@
   }
   *{box-sizing:border-box}
   html,body{margin:0;height:100%;background:#05080d;color:var(--ink);
-    font:14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;overflow:hidden}
+    font:14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;overflow:hidden;
+    overscroll-behavior:none}   /* no pull-to-refresh from swipes on the chrome */
+  /* kiosk touch: no long-press text selection/magnifier, no grey tap-flash */
+  body{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;
+    -webkit-tap-highlight-color:transparent}
   #map{position:absolute;inset:0;background:#05080d}
 
   /* ---- top bar: title, live clock, plane count ---- */
@@ -133,7 +137,12 @@
     #card .ghost-msg{margin-top:9px;font-size:11.5px}
     #legend{top:40px;right:8px;padding:7px 9px;font-size:10px;gap:4px}
     #legend .lh{font-size:8px}
+    #legend div.tog{padding:4px 0}   /* keep rows finger-sized despite the smaller type
+                                        (div. beats the later base rule's specificity) */
     #ctl{right:8px;bottom:10px}
+    #ctl button{padding:11px 14px}
+    .leaflet-popup.plane-pop a.leaflet-popup-close-button{
+      font-size:22px;width:32px;height:32px;line-height:32px;top:4px;right:4px}
   }
 
   /* dark leaflet attribution */
@@ -142,7 +151,8 @@
   .leaflet-bar a{background:#11161f;color:#cdd6e6;border-color:#222a38}
   #legend .lh{margin-top:5px;font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:#5a6577}
   #legend .lh:first-child{margin-top:0}
-  #legend .tog{cursor:pointer}
+  #legend .tog{cursor:pointer;padding:2px 0}
+  #legend .tog:active{opacity:.55}
   #legend .tog.off{opacity:.32;text-decoration:line-through}
   #legend i.ln{width:14px;height:3px;border-radius:2px}
 
@@ -525,6 +535,8 @@ map.getContainer().addEventListener('wheel', stopFollow, {passive:true});
 // dragstart and no wheel, and without this the follow re-centres on her every
 // cycle, fighting the user's pinch on the touchscreen frame.
 map.getContainer().addEventListener('touchstart', e=>{ if(e.touches.length>=2) stopFollow(); }, {passive:true});
+// kiosk: long-press on Chromium touch pops a context menu — never wanted on the frame
+if(TOUCH) window.addEventListener('contextmenu', e=>e.preventDefault());
 
 // ---- helpers ----
 const $card = document.getElementById('card');
@@ -1510,6 +1522,10 @@ function onPlaneClick(e){
   if(ac) openDetail(ac, e.target.getLatLng ? e.target.getLatLng() : e.latlng);
 }
 function openDetail(ac, latlng){
+  // inspecting another plane while following Allie's: stop the follow, or the
+  // popup's autoPan and the 4s re-centre fight over the viewport. Tapping HER
+  // keeps the follow — you're looking at exactly what it's centred on.
+  if(!isFav(ac)) stopFollow();
   const seq = ++detailSeq;
   const pop = L.popup({className:'plane-pop', maxWidth:300, minWidth:200, autoPanPadding:[34,70]})
     .setLatLng(latlng).setContent(detailHTML(ac, undefined, undefined)).openOn(map);
@@ -1647,9 +1663,11 @@ function ghostRand(){ return [GHOST_BOX.latMin + Math.random()*(GHOST_BOX.latMax
                               GHOST_BOX.lonMin + Math.random()*(GHOST_BOX.lonMax-GHOST_BOX.lonMin)]; }
 function ghostBearing(a,b,c,d){ return (_bearing(a,b,c,d)*180/Math.PI + 360) % 360; }
 function ghostIcon(){
-  const s = 30;
-  return L.divIcon({className:'plane ghost', iconSize:[s,s], iconAnchor:[s/2,s/2],
-    html:`<div class="sil" style="color:#ff2b2b"><svg width="${s}" height="${s}" viewBox="0 0 100 100" style="transform:rotate(${ghost?ghost.track:0}deg)"><g fill="currentColor">${RAZOR_SVG}</g></svg></div>`});
+  // visual stays 30px, but the tappable icon box is 52px — the most important
+  // tap on the frame (Harrison's notes) must not lose to a fingertip near-miss
+  const s = 30, box = TOUCH ? 52 : 30, pad = (box - s) / 2;
+  return L.divIcon({className:'plane ghost', iconSize:[box,box], iconAnchor:[box/2,box/2],
+    html:`<div class="sil" style="color:#ff2b2b;padding:${pad}px"><svg width="${s}" height="${s}" viewBox="0 0 100 100" style="transform:rotate(${ghost?ghost.track:0}deg)"><g fill="currentColor">${RAZOR_SVG}</g></svg></div>`});
 }
 function ghostSpawn(){
   const [lat,lon]=ghostRand(), [tLat,tLon]=ghostRand();
