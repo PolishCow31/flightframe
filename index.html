@@ -422,6 +422,27 @@ L.marker([42.36837,-83.35271], {interactive:false, keyboard:false, zIndexOffset:
 const params = new URLSearchParams(location.search);
 let fav = (params.get('fav') || 'N527DN').toUpperCase();
 if(params.has('nopulse')) document.body.classList.add('nopulse');   // diagnostic: see CSS
+// ?diag=1 — on-screen perf probe: display refresh (rAF/s), actual canvas redraw
+// rates, and the knobs that matter. One photo of this chip replaces an htop safari.
+let _dRaf=0, _dPlane=0, _dTrail=0;
+if(params.has('diag')){
+  const el = document.createElement('div');
+  el.style.cssText = 'position:fixed;top:8px;right:8px;z-index:3000;background:#000c;'+
+    'color:#7fe0a8;font:11px/1.5 ui-monospace,Menlo,monospace;padding:8px 10px;'+
+    'border:1px solid #2a4;border-radius:6px;pointer-events:none;white-space:pre';
+  document.body.appendChild(el);
+  setInterval(()=>{
+    el.textContent =
+      'refresh ' + _dRaf + '/s  (display Hz)\n' +
+      'plane redraws ' + _dPlane + '/s   trail ' + _dTrail + '/s\n' +
+      'interval ' + Math.round(frameInterval) + 'ms  z' + map.getZoom().toFixed(1) +
+      '  dpr ' + devicePixelRatio + '\n' +
+      'planes ' + latestPlanes.length +
+      '  pulses ' + (document.body.classList.contains('nopulse')?'OFF':'on') +
+      '  ghost ' + (ghostMarker && map.hasLayer(ghostMarker)?'shown':'hidden');
+    _dRaf=0; _dPlane=0; _dTrail=0;
+  }, 1000);
+}
 
 // ---- legend toggles: tap an operator class to show/hide it ----
 document.querySelectorAll('#legend .tog[data-cls]').forEach(el=>{
@@ -851,6 +872,7 @@ const PlaneLayer = L.Layer.extend({
   //      (colour × fade-tier × width) bucket — ~20 strokes for the whole frame ----
   redrawTrails(){
     const m = this._map, b = this._bounds; if(!b || !m || this._zooming) return;
+    _dTrail++;
     const ctx = this._tctx, dpr = this._dpr||1, bs = b.getSize();
     ctx.setTransform(dpr,0,0,dpr,0,0);
     ctx.clearRect(0,0,bs.x,bs.y);
@@ -906,6 +928,7 @@ const PlaneLayer = L.Layer.extend({
   // ---- planes: sprites at their INTERPOLATED positions; runs every anim frame ----
   redrawPlanes(){
     const m = this._map, b = this._bounds; if(!b || !m || this._zooming) return;
+    _dPlane++;
     const ctx = this._pctx, dpr = this._dpr||1, bs = b.getSize();
     ctx.setTransform(dpr,0,0,dpr,0,0);
     ctx.clearRect(0,0,bs.x,bs.y);
@@ -1004,6 +1027,7 @@ map.on('zoomend moveend', retuneFrameRate);
 let lastFrame = 0;
 function glideFrame(now){
   requestAnimationFrame(glideFrame);
+  _dRaf++;
   if(now - lastFrame < frameInterval) return;
   lastFrame = now;
   planeLayer.redrawPlanes();
