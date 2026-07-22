@@ -98,9 +98,10 @@
   .fav-est{opacity:.6}
   .fav-est .fav-label{background:#5b6577;color:#e7edf6}
   /* hidden easter egg: the Razor Crest ghost — faint red, no label until clicked */
-  .ghost{opacity:.15;transition:opacity .3s}
+  .ghost{opacity:.26;transition:opacity .3s}   /* a tad more visible than the original .15
+                                                  — findable when scanning at z8, still ghostly */
   .ghost:hover{opacity:.5}
-  .ghost svg{display:block;filter:drop-shadow(0 0 2px rgba(255,40,40,.5))}
+  .ghost svg{display:block;filter:drop-shadow(0 0 3px rgba(255,55,55,.65))}
   .leaflet-popup.razor .leaflet-popup-content-wrapper{border-color:rgba(255,70,70,.5);
     box-shadow:0 12px 40px #000b,0 0 26px rgba(255,43,43,.16)}
   .leaflet-popup.razor .leaflet-popup-tip{border-color:rgba(255,70,70,.5)}
@@ -155,6 +156,7 @@
                                         (div. beats the later base rule's specificity) */
     #ctl{right:8px;bottom:10px}
     #ctl button{padding:11px 14px}
+    #ctl div#zoomctl button{width:52px;height:46px;padding:0;font-size:25px}  /* div# beats the later base rule's equal specificity */
     .leaflet-popup.plane-pop a.leaflet-popup-close-button{
       font-size:22px;width:32px;height:32px;line-height:32px;top:4px;right:4px}
   }
@@ -168,6 +170,13 @@
   .leaflet-bar a{background:#11161f;color:#cdd6e6;border-color:#222a38}
   #legend .lh{margin-top:5px;font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:#5a6577}
   #legend .lh:first-child{margin-top:0}
+  /* collapsible: tap the header to fold the whole menu to just its title. Declutters
+     the frame; the caret rotates ▾->▸ and everything but the header hides. */
+  #legend .hdr{cursor:pointer;display:flex;align-items:center;justify-content:space-between;
+    gap:14px;padding:2px 0}
+  #legend .hdr .caret{font-size:9px;opacity:.7;transition:transform .2s}
+  #legend.collapsed .hdr .caret{transform:rotate(-90deg)}   /* ▾ points right (▸) */
+  #legend.collapsed > *:not(.hdr){display:none}
   #legend .tog{cursor:pointer;padding:2px 0}
   #legend .tog:active{opacity:.55}
   #legend .tog.off{opacity:.32;text-decoration:line-through}
@@ -184,6 +193,19 @@
   #ctl button:active{transform:scale(.97)}
   #ctl button.on{border-color:var(--fav);color:#fff;background:rgba(255,125,26,.18)}
   #ctl button i{width:9px;height:9px;border-radius:50%;flex:none}
+  /* connected +/- zoom control — the reliable zoom path on the touch frame (pinch
+     depends on the Pi's touch input; buttons always work). Own panel styling;
+     align-self opts the compact unit out of the column's stretch. */
+  #ctl #zoomctl{align-self:flex-end;display:flex;flex-direction:column;overflow:hidden;
+    border-radius:10px;border:1px solid rgba(255,255,255,.12);background:var(--panel);
+    backdrop-filter:blur(8px);box-shadow:0 8px 30px #0008}
+  #ctl #zoomctl button{width:44px;height:40px;padding:0;border:0;border-radius:0;
+    background:transparent;box-shadow:none;justify-content:center;color:var(--ink);
+    font:400 22px/1 -apple-system,BlinkMacSystemFont,sans-serif}
+  #ctl #zoomctl button:first-child{border-bottom:1px solid rgba(255,255,255,.12)}
+  #ctl #zoomctl button:hover{background:rgba(255,255,255,.08);border-color:transparent}
+  #ctl #zoomctl button:active{transform:none;background:rgba(255,255,255,.18)}
+  #ctl #zoomctl button:disabled{opacity:.3;cursor:default}
 
   /* ---- click-to-inspect popup ---- */
   .leaflet-popup.plane-pop .leaflet-popup-content-wrapper{background:var(--panel);color:var(--ink);
@@ -238,7 +260,7 @@
 <div id="card"></div>
 
 <div id="legend">
-  <div class="lh">Operator <span style="opacity:.6">· tap to toggle</span></div>
+  <div class="lh hdr" id="legend-hdr">Operator<span class="caret">▾</span></div>
   <div class="tog" data-cls="commercial"><i style="background:#3d9bfe"></i>Commercial</div>
   <div class="tog" data-cls="private"><i style="background:#ffb43b"></i>Private / GA</div>
   <div class="tog" data-cls="heli"><i style="background:#c678ff"></i>Helicopter</div>
@@ -248,6 +270,10 @@
 </div>
 
 <div id="ctl">
+  <div id="zoomctl">
+    <button id="btn-zin" type="button" aria-label="Zoom in">+</button>
+    <button id="btn-zout" type="button" aria-label="Zoom out">−</button>
+  </div>
   <button id="btn-fav" type="button"><i style="background:var(--fav)"></i>Allie's plane</button>
   <button id="btn-liv" type="button"><i style="background:#2ee6c0"></i>Livonia</button>
 </div>
@@ -369,8 +395,10 @@ const map = L.map('map',{
     // 7" kiosk (800x480): z6.55 fills the height with the 155nm disc instead of
     // leaving it a small circle in a sea of map. Bigger screens keep z6 context.
     Math.min(window.innerWidth, window.innerHeight) <= 520 ? 6.55 : 6);
-// zoom is gesture-only (his call): two-finger pinch (touchZoom, above), double-tap
-// to zoom in, and the smooth wheel handler on desktop — no on-screen +/- buttons.
+// zoom paths: on-screen +/- buttons (#zoomctl — the RELIABLE one on the frame),
+// plus pinch (touchZoom, above), double-tap, and the smooth wheel handler.
+// Pinch depends on the Pi delivering multi-touch events — if it doesn't fire on the
+// panel, the Chromium kiosk likely needs --touch-events=enabled (see kiosk plumbing).
 
 // dark "carto" basemap — free for reasonable personal use, makes planes pop
 L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{
@@ -549,7 +577,25 @@ document.querySelectorAll('#legend .tog[data-cls]').forEach(el=>{
     render();
   });
 });
-// ---- bottom-right buttons: centre her plane / centre Livonia ----
+// ---- collapse the whole Operator menu to just its header (persisted) ----
+const legendEl = document.getElementById('legend'), legHdr = document.getElementById('legend-hdr');
+try{ if(localStorage.getItem('ff_legend_collapsed')==='1') legendEl.classList.add('collapsed'); }catch(e){}
+legHdr.addEventListener('click', ()=>{
+  const c = legendEl.classList.toggle('collapsed');
+  try{ localStorage.setItem('ff_legend_collapsed', c?'1':'0'); }catch(e){}
+});
+// ---- bottom-right buttons: zoom +/-, centre her plane / centre Livonia ----
+// +/- zoom. Deliberately DON'T stopFollow: zoomIn/Out zoom toward the map centre,
+// which while following IS Allie's plane, so a tap zooms in ON her instead of
+// fighting the follow (unlike drag/wheel/pinch/dblclick, which move the centre).
+const btnZin = document.getElementById('btn-zin'), btnZout = document.getElementById('btn-zout');
+function syncZoomBtns(){
+  btnZin.disabled  = map.getZoom() >= map.getMaxZoom() - 1e-6;
+  btnZout.disabled = map.getZoom() <= map.getMinZoom() + 1e-6;
+}
+btnZin.addEventListener('click', ()=> map.zoomIn());
+btnZout.addEventListener('click', ()=> map.zoomOut());
+map.on('zoomend', syncZoomBtns); syncZoomBtns();
 const btnFav = document.getElementById('btn-fav');
 document.getElementById('btn-liv').addEventListener('click', ()=>{
   following = false; btnFav.classList.remove('on');     // going to Livonia stops the follow
@@ -1775,7 +1821,7 @@ function ghostBearing(a,b,c,d){ return (_bearing(a,b,c,d)*180/Math.PI + 360) % 3
 function ghostIcon(){
   // visual stays 30px, but the tappable icon box is 52px — the most important
   // tap on the frame (Harrison's notes) must not lose to a fingertip near-miss
-  const s = 30, box = TOUCH ? 52 : 30, pad = (box - s) / 2;
+  const s = 34, box = TOUCH ? 56 : 34, pad = (box - s) / 2;
   return L.divIcon({className:'plane ghost', iconSize:[box,box], iconAnchor:[box/2,box/2],
     html:`<div class="sil" style="color:#ff2b2b;padding:${pad}px"><svg width="${s}" height="${s}" viewBox="0 0 100 100" style="transform:rotate(${ghost?ghost.track:0}deg)"><g fill="currentColor">${RAZOR_SVG}</g></svg></div>`});
 }
