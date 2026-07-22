@@ -155,6 +155,7 @@
                                         (div. beats the later base rule's specificity) */
     #ctl{right:8px;bottom:10px}
     #ctl button{padding:11px 14px}
+    #ctl div#zoomctl button{width:52px;height:46px;padding:0;font-size:25px}  /* div# beats the later base rule's equal specificity */
     .leaflet-popup.plane-pop a.leaflet-popup-close-button{
       font-size:22px;width:32px;height:32px;line-height:32px;top:4px;right:4px}
   }
@@ -184,6 +185,19 @@
   #ctl button:active{transform:scale(.97)}
   #ctl button.on{border-color:var(--fav);color:#fff;background:rgba(255,125,26,.18)}
   #ctl button i{width:9px;height:9px;border-radius:50%;flex:none}
+  /* connected +/- zoom control (touchscreen: pinch/double-tap aren't discoverable;
+     these also make zooming to the ghost's z8 reachable in two clear taps). Own
+     panel styling; align-self opts the compact unit out of the column's stretch. */
+  #ctl #zoomctl{align-self:flex-end;display:flex;flex-direction:column;overflow:hidden;
+    border-radius:10px;border:1px solid rgba(255,255,255,.12);background:var(--panel);
+    backdrop-filter:blur(8px);box-shadow:0 8px 30px #0008}
+  #ctl #zoomctl button{width:44px;height:40px;padding:0;border:0;border-radius:0;
+    background:transparent;box-shadow:none;justify-content:center;color:var(--ink);
+    font:400 22px/1 -apple-system,BlinkMacSystemFont,sans-serif}
+  #ctl #zoomctl button:first-child{border-bottom:1px solid rgba(255,255,255,.12)}
+  #ctl #zoomctl button:hover{background:rgba(255,255,255,.08);border-color:transparent}
+  #ctl #zoomctl button:active{transform:none;background:rgba(255,255,255,.18)}
+  #ctl #zoomctl button:disabled{opacity:.3;cursor:default}
 
   /* ---- click-to-inspect popup ---- */
   .leaflet-popup.plane-pop .leaflet-popup-content-wrapper{background:var(--panel);color:var(--ink);
@@ -248,6 +262,10 @@
 </div>
 
 <div id="ctl">
+  <div id="zoomctl">
+    <button id="btn-zin" type="button" aria-label="Zoom in">+</button>
+    <button id="btn-zout" type="button" aria-label="Zoom out">−</button>
+  </div>
   <button id="btn-fav" type="button"><i style="background:var(--fav)"></i>Allie's plane</button>
   <button id="btn-liv" type="button"><i style="background:#2ee6c0"></i>Livonia</button>
 </div>
@@ -546,6 +564,18 @@ document.querySelectorAll('#legend .tog[data-cls]').forEach(el=>{
   });
 });
 // ---- bottom-right buttons: centre her plane / centre Livonia ----
+// +/- zoom buttons. Deliberately DON'T stopFollow: zoomIn/Out zoom toward the map
+// centre, which while following IS Allie's plane, so a tap zooms in ON her instead
+// of fighting the follow (unlike drag/wheel/pinch/dblclick, which move the centre).
+// map.zoomIn/Out clamp to min/maxZoom; refresh the disabled state at the ends.
+const btnZin = document.getElementById('btn-zin'), btnZout = document.getElementById('btn-zout');
+function syncZoomBtns(){
+  btnZin.disabled  = map.getZoom() >= map.getMaxZoom() - 1e-6;
+  btnZout.disabled = map.getZoom() <= map.getMinZoom() + 1e-6;
+}
+btnZin.addEventListener('click', ()=> map.zoomIn());
+btnZout.addEventListener('click', ()=> map.zoomOut());
+map.on('zoomend', syncZoomBtns); syncZoomBtns();
 const btnFav = document.getElementById('btn-fav');
 document.getElementById('btn-liv').addEventListener('click', ()=>{
   following = false; btnFav.classList.remove('on');     // going to Livonia stops the follow
