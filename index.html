@@ -1810,13 +1810,25 @@ function razorPick(){
 }
 // a small twin-pod gunship silhouette (nose up), drawn red at low opacity
 const RAZOR_SVG = `<rect x="46" y="14" width="8" height="70" rx="3"/><path d="M50 7 L45.5 19 L54.5 19 Z"/><rect x="22" y="31" width="7" height="38" rx="3"/><rect x="71" y="31" width="7" height="38" rx="3"/><rect x="27" y="45" width="46" height="6" rx="3"/><rect x="41" y="82" width="18" height="5" rx="2.5"/>`;
-const GHOST_BOX = {latMin:42.05, latMax:46.9, lonMin:-89.6, lonMax:-82.6};   // stays inside the Michigan frame
 const GHOST_DPS = 0.018;     // degrees/sec — a slow drift; constant speed regardless of timer throttling
 const GHOST_MIN_ZOOM = 8;    // only VISIBLE when fairly zoomed in (default view is z6) — keeps it hidden
 let ghost = null, ghostMarker = null, ghostLast = Date.now();
 
-function ghostRand(){ return [GHOST_BOX.latMin + Math.random()*(GHOST_BOX.latMax-GHOST_BOX.latMin),
-                              GHOST_BOX.lonMin + Math.random()*(GHOST_BOX.lonMax-GHOST_BOX.lonMin)]; }
+// The Razor Crest roams ONLY inside the radar disc. (It USED to use a fixed box sized
+// for the old 250nm radar; after the Jul 21 cut to 155nm that box reached ~2x past the
+// circle, so the ghost kept wandering off-coverage into blank map — unfindable.) Pick a
+// random point within 90% of MI_RADIUS (inset off the rim) by rejection-sampling the
+// bounding box against the great-circle distance. The disc is convex, so the ghost
+// drifting between two in-disc targets stays in-disc — constraining the targets is enough.
+const GHOST_MAX_NM = MI_RADIUS * 0.9;
+function ghostRand(){
+  const dLat = GHOST_MAX_NM/60, dLon = GHOST_MAX_NM/(60*Math.cos(MI.lat*Math.PI/180));
+  for(let i=0;i<40;i++){
+    const lat = MI.lat + (Math.random()*2-1)*dLat, lon = MI.lon + (Math.random()*2-1)*dLon;
+    if(haversine(MI.lat, MI.lon, lat, lon)*NM_PER_KM <= GHOST_MAX_NM) return [lat, lon];
+  }
+  return [MI.lat, MI.lon];   // fallback (never hit in practice: ~78% accept per try)
+}
 function ghostBearing(a,b,c,d){ return (_bearing(a,b,c,d)*180/Math.PI + 360) % 360; }
 function ghostIcon(){
   // visual stays 30px, but the tappable icon box is 52px — the most important
