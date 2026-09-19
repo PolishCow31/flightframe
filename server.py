@@ -28,10 +28,21 @@ import json
 import time
 import threading
 import os
+import gzip
 from urllib.parse import urlparse, parse_qs, quote
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PORT = int(os.environ.get("PORT", "8001"))
+# On the Pi and in dev we bind loopback only. On Render (RENDER=true in the env) the
+# platform's router must reach us, so bind everywhere; PORT is set by Render too.
+HOST = os.environ.get("HOST") or ("0.0.0.0" if os.environ.get("RENDER") else "127.0.0.1")
+
+# ---- /frame: the relay contract the hosted page speaks (mirrors relay/main.ts) ----
+# One answer per poll: the whole disc as positional rows (cols gives the order) plus her
+# plane's status, gzipped when the caller accepts it. Positional rows + gzip keep the
+# egress small (~11 KB per answer).
+FRAME_COLS = ["hex", "flight", "r", "t", "lat", "lon", "alt_baro", "gs", "track",
+              "seen_pos", "category", "baro_rate", "desc", "ownOp"]
 
 # --- the page itself: mirrored from the hosted copy, served from ./site when present ---
 SITE_URL = os.environ.get("SITE_URL", "https://flightframe.pages.dev")
@@ -171,18 +182,44 @@ def site_updater():
 
 def fetch_live(urls):
     # first source that answers a real {"ac":[...]} wins; a 200-status error envelope
-    # or a block page counts as a miss, same as _worker.js
+    # or a block page counts as a miss, same as relay/main.ts
+    return fetch_live_ex(urls)[0]
+
+
+def fetch_live_ex(urls):
+    # -> (bytes, source_name, stale). stale = the cache handed back an older-than-TTL
+    # answer because every fresh fetch failed (yesterday's answer beats a blank frame).
     errors = []
     for url in urls:
         try:
             data = fetch(url)
             j = json.loads(data)
             if isinstance(j, dict) and isinstance(j.get("ac"), list):
-                return data
+                with _lock:
+                    at = _cache.get(url, (time.time(), b""))[0]
+                source = "adsb.fi" if "adsb.fi" in url else ("adsb.lol" if "adsb.lol" in url else url)
+                return data, source, (time.time() - at) > TTL
             errors.append(f"{url}: no ac[]")
         except Exception as e:
             errors.append(f"{url}: {e}")
     raise RuntimeError("all live sources failed: " + "; ".join(errors))
+
+
+def frame_payload(reg):
+    # the /frame answer, as a dict; raises when no live source answers
+    data, source, stale = fetch_live_ex(LIVE["planes"])
+    ac = json.loads(data)["ac"]
+    rows = [[a.get(c) for c in FRAME_COLS] for a in ac]
+    fav, fav_source = None, "none"
+    if reg:
+        try:
+            fdata, fav_source, _ = fetch_live_ex([t.format(reg=quote(reg, safe='')) for t in LIVE["fav"]])
+            fac = json.loads(fdata)["ac"]
+            fav = fac[0] if fac else None
+        except Exception:
+            fav, fav_source = None, "miss"
+    return {"now": int(time.time() * 1000), "source": source, "stale": stale,
+            "cols": FRAME_COLS, "rows": rows, "fav": fav, "favSource": fav_source}
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -202,13 +239,29 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # the hosted page (https://flightframe.pages.dev) fetches this cross-origin;
         # public read-only data, so a wildcard is fine and needs no preflight
         self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Vary", "Accept-Encoding")
+        # gzip when asked: readsb JSON shrinks ~5x, /frame ~3x. On Render that is the
+        # difference between blowing the free egress and using a fraction of it.
+        if len(body) > 1024 and "gzip" in (self.headers.get("Accept-Encoding") or ""):
+            body = gzip.compress(body, compresslevel=6)
+            self.send_header("Content-Encoding", "gzip")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        if self.command != "HEAD":
+            self.wfile.write(body)
 
     def do_GET(self):
         u = urlparse(self.path)
         try:
+            if u.path in ("/health", "/api/health"):
+                return self._json(json.dumps({"ok": True, "service": "flightframe-relay", "cols": FRAME_COLS}))
+            if u.path in ("/frame", "/api/frame"):
+                # the relay contract: whole disc + her plane, one answer per poll
+                reg = (parse_qs(u.query).get("reg", [""])[0]).strip().upper()
+                try:
+                    return self._json(json.dumps(frame_payload(reg), separators=(",", ":")))
+                except Exception as e:
+                    return self._json(json.dumps({"error": str(e), "cols": FRAME_COLS, "rows": [], "fav": None}), code=502)
             if u.path == "/api/planes":
                 # everything currently flying over Michigan
                 return self._json(fetch_live(LIVE["planes"]))
@@ -274,6 +327,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # anything else: serve static files (index.html, etc.)
         return super().do_GET()
 
+    def do_HEAD(self):           # health probes sometimes HEAD; same routing, no body
+        return self.do_GET()
+
     def log_message(self, *a):  # keep the terminal quiet
         pass
 
@@ -281,12 +337,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 if __name__ == "__main__":
     socketserver.ThreadingTCPServer.allow_reuse_address = True
     socketserver.ThreadingTCPServer.daemon_threads = True   # stuck clients can't block shutdown
-    if not os.path.exists(os.path.join(HERE, "index.html")):
+    if not os.path.exists(os.path.join(HERE, "index.html")) and not os.environ.get("RENDER"):
         # installed copy (the Pi): keep the page mirrored from the hosted site.
-        # A dev checkout has index.html next to this file and serves that instead.
+        # A dev checkout has index.html next to this file and serves that instead;
+        # the Render relay only answers /frame and never serves the page.
         threading.Thread(target=site_updater, daemon=True).start()
-    with socketserver.ThreadingTCPServer(("127.0.0.1", PORT), Handler) as httpd:
-        print(f"FlightFrame running  ->  http://localhost:{PORT}  (serving {serve_dir()})", flush=True)
+    with socketserver.ThreadingTCPServer((HOST, PORT), Handler) as httpd:
+        print(f"FlightFrame running  ->  http://{HOST}:{PORT}  (serving {serve_dir()})", flush=True)
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
