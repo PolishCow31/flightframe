@@ -313,20 +313,41 @@ const MI_RADIUS = 155;                      // nm; matches server.py.
 // The route/aircraft lookups (adsbdb, the adsb.lol CDN) are still CORS-open and keep
 // their direct fallbacks below for whenever the proxy is down.
 const LOCAL = /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
+// Hosted copies get their planes from the RELAY instead: relay/main.ts on Deno Deploy,
+// off Cloudflare, so the feeds answer it (Sep 18 2026). One request per cycle
+// (/frame?reg=) carries the whole disc as positional rows plus her plane's status.
+// '' = no relay: the hosted copy shows the no-feed line and never probes anything.
+const RELAY_URL = '';
 async function tryProxy(path){
-  if(!LOCAL) return null;   // hosted copy: no feed (see above); don't spam a dead origin
+  if(!LOCAL) return null;   // hosted copy: server.py isn't there; the relay is (below)
   try{ const r = await fetch(path, {signal: AbortSignal.timeout(8000)}); if(!r.ok) return null; return await r.json(); }
   catch(e){ return null; }
+}
+let relayFav = null, relayFavAt = 0;   // her status rides along with each /frame answer
+async function relayFrame(){
+  const reg = (typeof fav==='string' && !fav.startsWith('TYPE:')) ? fav : '';
+  const r = await fetch(`${RELAY_URL}/frame?reg=${encodeURIComponent(reg)}`, {signal: AbortSignal.timeout(8000)});
+  if(!r.ok) throw new Error('relay '+r.status);   // 502 = both feeds down; keep the last frame
+  const j = await r.json();
+  if(!Array.isArray(j.rows) || !Array.isArray(j.cols)) throw new Error('relay: bad payload');
+  relayFav = j.fav || null; relayFavAt = Date.now();
+  return {ac: j.rows.map(row => Object.fromEntries(j.cols.map((c,i)=>[c,row[i]])))};
 }
 // 8s timeout on the polled fetches: a hung socket otherwise blocks the cycle for
 // ~20s+ while every sprite dead-reckons to its cap, and the eventual stale frame
 // used to recommit against that. Bounded, the next interval tick retries sooner.
 async function getPlanes(){
+  if(!LOCAL){ if(!RELAY_URL) throw new Error('planes: no feed on the hosted copy'); return relayFrame(); }
   const p = await tryProxy('/api/planes');
   if(!p) throw new Error('planes: proxy unavailable');   // _cycle keeps the last frame on a hiccup
   return p;
 }
 async function getFav(reg){
+  if(!LOCAL){
+    if(!RELAY_URL) throw new Error('fav: no feed on the hosted copy');
+    if(Date.now()-relayFavAt > 20000) throw new Error('fav: no fresh relay answer');
+    return {ac: relayFav ? [relayFav] : []};
+  }
   const p = await tryProxy('/api/fav?reg='+encodeURIComponent(reg));
   if(!p) throw new Error('fav: proxy unavailable');
   return p;
@@ -1436,7 +1457,7 @@ async function _cycle(){
   const feedStale = feedMisses >= 3;
   document.body.classList.toggle('stale', feedStale);
   const favInFrame = render();
-  if(feedStale) countEl.innerHTML = LOCAL ? 'signal lost — reconnecting'
+  if(feedStale) countEl.innerHTML = (LOCAL || RELAY_URL) ? 'signal lost — reconnecting'
                                           : 'no live feed on the hosted copy — the frame runs this from its Pi';
   // persist trails (throttled) so reloads/reboots come back with history intact
   if(Date.now() - lastTrailSave > TRAIL_SAVE_MS){ lastTrailSave = Date.now(); saveTrails(); }
