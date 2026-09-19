@@ -2,20 +2,20 @@
 // "advanced mode"; sits next to index.html in the deploy dir; _routes.json keeps every
 // non-/api/ path on the free static tier).
 //
-// The page asks its OWN origin for /api/frame?reg=; this fetches it from the relay on
-// Deno Deploy (relay/main.ts) and hands it back verbatim. Why a façade instead of the
+// The page asks its OWN origin for /api/frame?reg=; this fetches it from the relay — server.py
+// as a Render free web service (no card; Deno's free tier wanted one) — and hands it back verbatim. Why a façade instead of the
 // page calling deno.net directly (Sep 18 2026):
 //   1. Home-network "safe browsing" filters block brand-new hostnames. Christian's
 //      Xfinity line intercepted flightframe.polishcow31.deno.net on port 443 with a
 //      plaintext redirect to safebrowse.io after the first request; the brother's line
 //      may do the same. flightframe.pages.dev has been on the wall for months and passes.
 //   2. Same origin = no CORS, no preflight.
-// Cloudflare egress -> Deno is fine. It's Cloudflare egress -> the ADS-B feeds that the
+// Cloudflare egress -> Render is fine. It's Cloudflare egress -> the ADS-B feeds that the
 // feeds block (adsb.fi/adsb.one WAF 403, adsb.lol 429; measured), which is the whole
-// reason the relay lives on Deno. Budget: Workers free plan = 100k requests/day; one
+// reason the relay lives off Cloudflare. (relay/main.ts is the same contract for Deno.) Budget: Workers free plan = 100k requests/day; one
 // wall at one /api/frame per 4 s ≈ 21.6k/day. Static asset hits are free and unlimited.
 
-const RELAY = 'https://flightframe.polishcow31.deno.net';
+const RELAY = 'https://flightframe-relay.onrender.com';
 const TIMEOUT_MS = 12000;
 const UA = 'FlightFrame/1.2 facade (personal radar picture frame; +https://flightframe.pages.dev)';
 

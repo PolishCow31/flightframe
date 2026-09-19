@@ -330,6 +330,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_HEAD(self):           # health probes sometimes HEAD; same routing, no body
         return self.do_GET()
 
+    def do_OPTIONS(self):        # CORS preflight, should a browser ever send one
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "*")
+        self.send_header("Access-Control-Max-Age", "86400")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def log_message(self, *a):  # keep the terminal quiet
         pass
 

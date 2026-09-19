@@ -42,7 +42,7 @@ await test('/api/frame: forwards reg (encoded) to the relay and returns its JSON
   const res = await W.handle(req('/api/frame?reg=n/1'), fakeEnv(), f);
   assert.equal(res.status, 200);
   assert.equal(f.calls.length, 1);
-  assert.equal(f.calls[0].url, 'https://flightframe.polishcow31.deno.net/frame?reg=n%2F1');
+  assert.equal(f.calls[0].url, 'https://flightframe-relay.onrender.com/frame?reg=n%2F1');
   assert.ok(f.calls[0].init.signal instanceof AbortSignal);
   assert.match(res.headers.get('content-type'), /application\/json/);
   assert.equal(res.headers.get('cache-control'), 'no-store');
@@ -54,7 +54,7 @@ await test('/api/frame: forwards reg (encoded) to the relay and returns its JSON
 await test('/api/frame without reg: relay asked with an empty reg', async () => {
   const f = fakeFetch({ body: FRAME });
   await W.handle(req('/api/frame'), fakeEnv(), f);
-  assert.equal(f.calls[0].url, 'https://flightframe.polishcow31.deno.net/frame?reg=');
+  assert.equal(f.calls[0].url, 'https://flightframe-relay.onrender.com/frame?reg=');
 });
 
 await test("relay's own 502 JSON (both feeds down) passes through as 502 JSON", async () => {

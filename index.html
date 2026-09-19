@@ -313,14 +313,15 @@ const MI_RADIUS = 155;                      // nm; matches server.py.
 // The route/aircraft lookups (adsbdb, the adsb.lol CDN) are still CORS-open and keep
 // their direct fallbacks below for whenever the proxy is down.
 const LOCAL = /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
-// Hosted copies get their planes from the RELAY instead: relay/main.ts on Deno Deploy,
-// off Cloudflare, so the feeds answer it (Sep 18 2026). One request per cycle
+// Hosted copies get their planes from the RELAY instead: server.py on Render (free web
+// service; relay/main.ts is the same contract for Deno), off Cloudflare, so the feeds
+// answer it (Sep 18 2026). One request per cycle
 // (/frame?reg=) carries the whole disc as positional rows plus her plane's status.
 // Asked first through this site's OWN origin (/api/frame -> _worker.js -> the relay):
 // home-network "safe browsing" filters block brand-new hostnames like *.deno.net (seen
 // on Christian's Xfinity line), but flightframe.pages.dev has been trusted on the wall
 // for months. The relay's own address is the fallback. '' = no relay at all.
-const RELAY_URL = 'https://flightframe.polishcow31.deno.net';
+const RELAY_URL = 'https://flightframe-relay.onrender.com';
 async function tryProxy(path){
   if(!LOCAL) return null;   // hosted copy: server.py isn't there; the relay is (below)
   try{ const r = await fetch(path, {signal: AbortSignal.timeout(8000)}); if(!r.ok) return null; return await r.json(); }
