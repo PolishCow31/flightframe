@@ -4,10 +4,19 @@ FlightFrame — a wall-mounted Michigan flight-radar frame that spotlights one p
 
 Stdlib only (no pip installs). It does two jobs:
   1. Serves index.html (the frame UI).
-  2. Proxies the free airplanes.live ADS-B API, so the browser never talks to
-     the API directly. That kills CORS headaches AND lets us cache responses
-     server-side to stay under airplanes.live's 1-request/second limit, no
+  2. Proxies the live ADS-B feed (adsb.fi, adsb.lol as fallback), so the browser
+     never talks to a feed directly. That kills CORS headaches AND lets us cache
+     responses server-side to stay under adsb.fi's 1-request/second limit, no
      matter how many times the frame refreshes.
+
+ON THE FRAME (Sep 18 2026): this runs on the Pi itself and the kiosk points at
+http://localhost:8001/ — page AND proxy on one origin. No free feed is callable from a
+browser any more, the aggregators block Cloudflare Workers egress (see _worker.js),
+and Chrome's Local Network Access gate stops an https page from reaching localhost.
+  3. Mirrors the site (index.html, leaflet.*, robots.txt) from SITE_URL into ./site/
+     at start and every UPDATE_EVERY seconds, atomically, keeping the last good copy.
+     So "deploy to Pages" still updates the wall: the page's /api/version poll sees
+     the new mtime and reloads itself within seconds. install-pi.sh sets this up.
 
 Run:   python3 server.py        (defaults to http://localhost:8001)
        PORT=9000 python3 server.py
@@ -24,12 +33,32 @@ from urllib.parse import urlparse, parse_qs, quote
 HERE = os.path.dirname(os.path.abspath(__file__))
 PORT = int(os.environ.get("PORT", "8001"))
 
+# --- the page itself: mirrored from the hosted copy, served from ./site when present ---
+SITE_URL = os.environ.get("SITE_URL", "https://flightframe.pages.dev")
+SITE_DIR = os.path.join(HERE, "site")
+SITE_FILES = ("index.html", "leaflet.js", "leaflet.css", "robots.txt")
+UPDATE_EVERY = 6 * 3600          # seconds between mirror checks (plus one at start)
+SITE_MIN_BYTES = {"index.html": 50_000, "leaflet.js": 100_000, "leaflet.css": 5_000, "robots.txt": 5}
+
 # --- The "frame": Livonia (home) + a 155nm radius ---
 # 155nm ~= mid-Lake Michigan: keeps southeast Michigan dense while excluding the
 # ORD/MDW terminal swarm (~193nm) — the brother's call for the Pi frame, Jul 21.
 # (250 was the API max and covered Chicago/Toronto/Mackinac — flip back anytime.)
 MI_LAT, MI_LON, MI_RADIUS = 42.36837, -83.35271, 155
-UPSTREAM = "https://api.airplanes.live/v2"
+# Live feeds (Sep 18 2026): airplanes.live took its free API down in mid-Aug 2026
+# (403 "contact us"; feeder-IP only). adsb.fi is primary (free, no key, 1 req/s,
+# personal use, attribution required); adsb.lol is the fallback. Same readsb JSON
+# shape ({"ac":[...]}), so the page needs nothing else.
+LIVE = {
+    "planes": [
+        f"https://opendata.adsb.fi/api/v3/lat/{MI_LAT}/lon/{MI_LON}/dist/{MI_RADIUS}",
+        f"https://api.adsb.lol/v2/point/{MI_LAT}/{MI_LON}/{MI_RADIUS}",
+    ],
+    "fav": [
+        "https://opendata.adsb.fi/api/v2/registration/{reg}",
+        "https://api.adsb.lol/v2/reg/{reg}",
+    ],
+}
 ADSBDB = "https://api.adsbdb.com/v0"          # callsign -> route/airline, reg -> aircraft
 LOL_ROUTES = "https://vrs-standing-data.adsb.lol/routes"   # community VRS route db (fallback source)
 
@@ -91,6 +120,71 @@ def fetch(url, ttl=TTL):
         return data
 
 
+def serve_dir():
+    # the mirrored site if we have one, else the folder this file lives in (dev checkout)
+    return SITE_DIR if os.path.exists(os.path.join(SITE_DIR, "index.html")) else HERE
+
+
+def site_update():
+    # Pull every site file; swap each in only if it downloaded whole and changed. A
+    # failed or partial download leaves the current copy untouched (the wall must never
+    # boot into half a page). Returns the number of files that changed.
+    changed = 0
+    os.makedirs(SITE_DIR, exist_ok=True)
+    for name in SITE_FILES:
+        try:
+            # Pages answers /index.html with a 308 to / (and not every urllib follows 308)
+            src = f"{SITE_URL}/" if name == "index.html" else f"{SITE_URL}/{name}"
+            req = urllib.request.Request(src, headers={
+                "User-Agent": "FlightFrame/1.1 (site mirror)", "Cache-Control": "no-cache"})
+            with urllib.request.urlopen(req, timeout=20) as r:
+                data = r.read()
+            if len(data) < SITE_MIN_BYTES.get(name, 1):
+                raise ValueError(f"{name}: only {len(data)} bytes")
+            if name == "index.html" and b"<title>FlightFrame" not in data:
+                raise ValueError("index.html: not the frame page")
+            dst = os.path.join(SITE_DIR, name)
+            if os.path.exists(dst) and open(dst, "rb").read() == data:
+                continue
+            tmp = dst + ".part"
+            with open(tmp, "wb") as f:
+                f.write(data)
+            os.replace(tmp, dst)          # atomic on POSIX
+            changed += 1
+        except Exception as e:
+            print(f"site mirror: {name} kept as-is ({e})", flush=True)
+    if changed:
+        print(f"site mirror: {changed} file(s) updated from {SITE_URL}", flush=True)
+    return changed
+
+
+def site_updater():
+    # daemon loop: one pull at start (after the server is up), then every UPDATE_EVERY
+    time.sleep(3)
+    while True:
+        try:
+            site_update()
+        except Exception as e:
+            print(f"site mirror: {e}", flush=True)
+        time.sleep(UPDATE_EVERY)
+
+
+def fetch_live(urls):
+    # first source that answers a real {"ac":[...]} wins; a 200-status error envelope
+    # or a block page counts as a miss, same as _worker.js
+    errors = []
+    for url in urls:
+        try:
+            data = fetch(url)
+            j = json.loads(data)
+            if isinstance(j, dict) and isinstance(j.get("ac"), list):
+                return data
+            errors.append(f"{url}: no ac[]")
+        except Exception as e:
+            errors.append(f"{url}: {e}")
+    raise RuntimeError("all live sources failed: " + "; ".join(errors))
+
+
 class Handler(http.server.SimpleHTTPRequestHandler):
     # HTTP/1.1 = keep-alive: the page polls /api/planes every 4s and /api/version
     # every 2s; reusing one TCP connection beats a fresh handshake per poll.
@@ -98,13 +192,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def __init__(self, *a, **k):
-        super().__init__(*a, directory=HERE, **k)
+        super().__init__(*a, directory=serve_dir(), **k)
 
     def _json(self, raw, code=200):
         body = raw if isinstance(raw, bytes) else raw.encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Cache-Control", "no-store")
+        # the hosted page (https://flightframe.pages.dev) fetches this cross-origin;
+        # public read-only data, so a wildcard is fine and needs no preflight
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -114,19 +211,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         try:
             if u.path == "/api/planes":
                 # everything currently flying over Michigan
-                return self._json(fetch(f"{UPSTREAM}/point/{MI_LAT}/{MI_LON}/{MI_RADIUS}"))
+                return self._json(fetch_live(LIVE["planes"]))
             if u.path == "/api/fav":
                 # status of one specific plane by registration — works anywhere,
                 # even if it's parked in California. Empty reg -> empty result.
                 reg = (parse_qs(u.query).get("reg", [""])[0]).strip().upper()
                 if not reg:
                     return self._json(b'{"ac":[]}')
-                return self._json(fetch(f"{UPSTREAM}/reg/{quote(reg, safe='')}"))
+                return self._json(fetch_live([t.format(reg=quote(reg, safe='')) for t in LIVE["fav"]]))
             if u.path == "/api/version":
-                # live-reload: the page polls this and reloads when a file changes
+                # live-reload: the page polls this and reloads when a file changes —
+                # on the frame that's how a fresh deploy (mirrored into ./site) lands
                 try:
-                    m = max(os.path.getmtime(os.path.join(HERE, "index.html")),
-                            os.path.getmtime(os.path.abspath(__file__)))
+                    d = serve_dir()
+                    m = max([os.path.getmtime(os.path.abspath(__file__))] +
+                            [os.path.getmtime(os.path.join(d, n)) for n in SITE_FILES
+                             if os.path.exists(os.path.join(d, n))])
                 except Exception:
                     m = 0
                 return self._json(json.dumps({"v": m}))
@@ -163,6 +263,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     return self._json(b'{"response":null}')
         except Exception as e:
             return self._json(json.dumps({"error": str(e), "ac": []}), code=502)
+        # First boot on a Pi before the mirror has landed: no page yet anywhere local.
+        # Bounce to the hosted copy rather than show a bare directory listing.
+        if u.path in ("/", "/index.html") and not os.path.exists(os.path.join(serve_dir(), "index.html")):
+            self.send_response(302)
+            self.send_header("Location", SITE_URL + "/")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         # anything else: serve static files (index.html, etc.)
         return super().do_GET()
 
@@ -173,8 +281,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 if __name__ == "__main__":
     socketserver.ThreadingTCPServer.allow_reuse_address = True
     socketserver.ThreadingTCPServer.daemon_threads = True   # stuck clients can't block shutdown
+    if not os.path.exists(os.path.join(HERE, "index.html")):
+        # installed copy (the Pi): keep the page mirrored from the hosted site.
+        # A dev checkout has index.html next to this file and serves that instead.
+        threading.Thread(target=site_updater, daemon=True).start()
     with socketserver.ThreadingTCPServer(("127.0.0.1", PORT), Handler) as httpd:
-        print(f"FlightFrame running  ->  http://localhost:{PORT}")
+        print(f"FlightFrame running  ->  http://localhost:{PORT}  (serving {serve_dir()})", flush=True)
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:

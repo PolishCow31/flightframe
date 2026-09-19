@@ -167,6 +167,8 @@
   .leaflet-control-attribution{background:#0a0e16cc!important;color:#55617a!important;
     pointer-events:none}
   .leaflet-control-attribution a{color:#7d8ba6!important;text-decoration:none}
+  body.touch .leaflet-control-attribution a{pointer-events:none}   /* kiosk: credit shown, never tappable */
+  .leaflet-tile-pane{filter:brightness(.55) contrast(1.05)}   /* Esri dark-gray -> near-black; drop if the Pi lags */
   .leaflet-bar a{background:#11161f;color:#cdd6e6;border-color:#222a38}
   #legend .lh{margin-top:5px;font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:#5a6577}
   #legend .lh:first-child{margin-top:0}
@@ -289,21 +291,30 @@
  * ------------------------------------------------------------------ */
 const MI = {lat:42.36837, lon:-83.35271};   // Livonia — home is the radar centre
 const REFRESH_MS = 4000;                    // poll cadence; also the glide-tween window
-const API_DIRECT = 'https://api.airplanes.live/v2';   // used when no local proxy is present
-const MI_RADIUS = 155;                                 // nm; matches server.py.
+const MI_RADIUS = 155;                      // nm; matches server.py.
 // 155nm ~= mid-Lake Michigan (his brother's call, Jul 21): excludes the ORD/MDW
 // terminal swarm (~193nm away) and roughly halves the plane count + payload.
 // Accepted trade: Toronto (~181nm), Traverse City (~172nm) and the Mackinac tip
 // (~213nm) fall outside — the frame is now a southeast-Michigan radar.
 
-// On localhost, try the local Python proxy first (cached, rate-limit-safe), then
-// fall back to calling the APIs straight from the browser (their CORS is open).
-// Hosted (pages.dev) skips the proxy attempt entirely: there IS no /api/* there,
-// and the SPA fallback answers every miss with 200 + the full page — so each
-// "try" would download the whole index.html before falling through. Junk traffic.
-const HAS_PROXY = /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
+// Every live-feed call goes through server.py's same-origin /api/* proxy. Since Sep 18
+// 2026 the frame's Pi runs server.py itself: it mirrors this page from pages.dev and
+// serves it at http://localhost:8001, so page and proxy share an origin. The hosted
+// copy at flightframe.pages.dev is the distribution channel (and a preview): it has
+// NO live feed, and says so instead of pretending to reconnect.
+// Why (all measured Sep 18 2026): airplanes.live took its free API down in mid-Aug
+// (403 "contact us"; feeder-IP only now); none of the free readsb aggregators
+// (adsb.fi, adsb.lol, adsb.one) send CORS headers, so no browser can call a feed
+// directly; a Cloudflare Pages Function can't stand in either — those aggregators
+// block or rate-limit Workers egress (adsb.fi + adsb.one: WAF 403; adsb.lol: 429 on
+// the first request; see _worker.js); and an https page can't reach a proxy on the
+// Pi's localhost because Chrome's Local Network Access gate (138+) denies it without
+// a permission prompt a kiosk never shows. Same origin sidesteps all four.
+// The route/aircraft lookups (adsbdb, the adsb.lol CDN) are still CORS-open and keep
+// their direct fallbacks below for whenever the proxy is down.
+const LOCAL = /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
 async function tryProxy(path){
-  if(!HAS_PROXY) return null;
+  if(!LOCAL) return null;   // hosted copy: no feed (see above); don't spam a dead origin
   try{ const r = await fetch(path, {signal: AbortSignal.timeout(8000)}); if(!r.ok) return null; return await r.json(); }
   catch(e){ return null; }
 }
@@ -312,17 +323,13 @@ async function tryProxy(path){
 // used to recommit against that. Bounded, the next interval tick retries sooner.
 async function getPlanes(){
   const p = await tryProxy('/api/planes');
-  if(p) return p;
-  const r = await fetch(`${API_DIRECT}/point/${MI.lat}/${MI.lon}/${MI_RADIUS}`, {signal: AbortSignal.timeout(8000)});
-  if(!r.ok) throw new Error('planes '+r.status);   // a JSON error body must not blank the sky
-  return r.json();
+  if(!p) throw new Error('planes: proxy unavailable');   // _cycle keeps the last frame on a hiccup
+  return p;
 }
 async function getFav(reg){
   const p = await tryProxy('/api/fav?reg='+encodeURIComponent(reg));
-  if(p) return p;
-  const r = await fetch(`${API_DIRECT}/reg/${encodeURIComponent(reg)}`, {signal: AbortSignal.timeout(8000)});
-  if(!r.ok) throw new Error('fav '+r.status);
-  return r.json();
+  if(!p) throw new Error('fav: proxy unavailable');
+  return p;
 }
 
 // ---- smooth continuous wheel zoom (mutsuyuki/Leaflet.SmoothWheelZoom, inlined) ----
@@ -400,12 +407,20 @@ const map = L.map('map',{
 // Pinch depends on the Pi delivering multi-touch events — if it doesn't fire on the
 // panel, the Chromium kiosk likely needs --touch-events=enabled (see kiosk plumbing).
 
-// dark "carto" basemap — free for reasonable personal use, makes planes pop
-L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{
-  subdomains:'abcd', maxZoom:19, noWrap:true,   // noWrap = render ONE world, no horizontal repeat
-  updateWhenZooming:false, updateWhenIdle:true, keepBuffer:4,   // no tile churn mid-gesture = smoother
-  attribution:'&copy; OpenStreetMap &copy; CARTO · data: airplanes.live · routes: adsbdb + adsb.lol'
+// dark basemap: Esri World Dark Gray (base + a city-label reference layer), keyless.
+// CARTO's free raster basemap went key-only in late Aug 2026 — every tile came back
+// with an "API KEY REQUIRED" watermark burned in (that's what the wall showed).
+// Esri's canvas is a lighter gray than CARTO's near-black, so the tile pane is dimmed
+// in CSS (.leaflet-tile-pane) to keep the planes popping; if the Pi ever lags again,
+// that filter is the first lever to pull. Native tiles stop at z16 (upsampled past it).
+const TILE_OPTS = {maxZoom:19, maxNativeZoom:16, noWrap:true,   // noWrap = ONE world, no horizontal repeat
+  updateWhenZooming:false, updateWhenIdle:true, keepBuffer:4};   // no tile churn mid-gesture = smoother
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {...TILE_OPTS,
+  // adsb.fi's terms: cite them AND link their home page. Links go inert on the kiosk
+  // (body.touch, below): a stray tap must never navigate the frame away with no keyboard.
+  attribution:'&copy; Esri, HERE, Garmin, &copy; OpenStreetMap contributors · data: <a href="https://adsb.fi" target="_blank" rel="noopener">adsb.fi</a> + <a href="https://adsb.lol" target="_blank" rel="noopener">adsb.lol</a> · routes: adsbdb + adsb.lol'
 }).addTo(map);
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}', {...TILE_OPTS, opacity:.75}).addTo(map);
 
 // faint radar rings, purely decorative, centred on the frame.
 // Outermost ring = the 155nm fetch edge, so the traffic cutoff reads as the
@@ -529,6 +544,7 @@ L.marker([42.36837,-83.35271], {interactive:false, keyboard:false, zIndexOffset:
 // localStorage override, which would have been stuck with no UI to change it.)
 const params = new URLSearchParams(location.search);
 const TOUCH = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+if(TOUCH) document.body.classList.add('touch');   // CSS hook (attribution links go inert on the frame)
 let fav = (params.get('fav') || 'N527DN').toUpperCase();
 if(params.has('nopulse')) document.body.classList.add('nopulse');   // diagnostic: see CSS
 // duty-cycled pulses: all rings fire a synchronized one-shot burst (class .pp)
@@ -1420,7 +1436,8 @@ async function _cycle(){
   const feedStale = feedMisses >= 3;
   document.body.classList.toggle('stale', feedStale);
   const favInFrame = render();
-  if(feedStale) countEl.innerHTML = 'signal lost — reconnecting';
+  if(feedStale) countEl.innerHTML = LOCAL ? 'signal lost — reconnecting'
+                                          : 'no live feed on the hosted copy — the frame runs this from its Pi';
   // persist trails (throttled) so reloads/reboots come back with history intact
   if(Date.now() - lastTrailSave > TRAIL_SAVE_MS){ lastTrailSave = Date.now(); saveTrails(); }
 
@@ -1899,7 +1916,8 @@ setInterval(ghostTick, 120);
 
 // ---- dev live-reload: poll the file version and reload the page when it changes.
 //      localhost only: hosted (pages.dev) has no /api/version — its SPA fallback
-//      answers 200 + the full page, so polling there is pure junk traffic ----
+//      answers 200 + the full page, so polling there is pure junk traffic; fresh
+//      deploys are picked up by the 4 AM reload anyway ----
 (function(){ if(!/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) return;
   let base=null;
   setInterval(async()=>{ try{ const r=await fetch('/api/version',{cache:'no-store'}); if(!r.ok) return;
