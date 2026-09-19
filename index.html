@@ -316,17 +316,29 @@ const LOCAL = /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
 // Hosted copies get their planes from the RELAY instead: relay/main.ts on Deno Deploy,
 // off Cloudflare, so the feeds answer it (Sep 18 2026). One request per cycle
 // (/frame?reg=) carries the whole disc as positional rows plus her plane's status.
-// '' = no relay: the hosted copy shows the no-feed line and never probes anything.
-const RELAY_URL = '';
+// Asked first through this site's OWN origin (/api/frame -> _worker.js -> the relay):
+// home-network "safe browsing" filters block brand-new hostnames like *.deno.net (seen
+// on Christian's Xfinity line), but flightframe.pages.dev has been trusted on the wall
+// for months. The relay's own address is the fallback. '' = no relay at all.
+const RELAY_URL = 'https://flightframe.polishcow31.deno.net';
 async function tryProxy(path){
   if(!LOCAL) return null;   // hosted copy: server.py isn't there; the relay is (below)
   try{ const r = await fetch(path, {signal: AbortSignal.timeout(8000)}); if(!r.ok) return null; return await r.json(); }
   catch(e){ return null; }
 }
 let relayFav = null, relayFavAt = 0;   // her status rides along with each /frame answer
+async function fetchFrame(url){
+  try{ const r = await fetch(url, {signal: AbortSignal.timeout(8000)});
+       if(!(r.headers.get('content-type')||'').includes('json')) return null;   // SPA fallback / a block page
+       return r; }
+  catch(e){ return null; }
+}
 async function relayFrame(){
   const reg = (typeof fav==='string' && !fav.startsWith('TYPE:')) ? fav : '';
-  const r = await fetch(`${RELAY_URL}/frame?reg=${encodeURIComponent(reg)}`, {signal: AbortSignal.timeout(8000)});
+  const q = `/frame?reg=${encodeURIComponent(reg)}`;
+  let r = await fetchFrame('/api' + q);                          // same-origin façade first
+  if(!r || !r.ok) r = (await fetchFrame(RELAY_URL + q)) || r;    // then the relay directly
+  if(!r) throw new Error('relay unreachable');
   if(!r.ok) throw new Error('relay '+r.status);   // 502 = both feeds down; keep the last frame
   const j = await r.json();
   if(!Array.isArray(j.rows) || !Array.isArray(j.cols)) throw new Error('relay: bad payload');
